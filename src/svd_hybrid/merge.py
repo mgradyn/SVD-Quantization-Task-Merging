@@ -2,7 +2,7 @@
 Merging logic with weighted averaging and reconstruction.
 """
 import torch
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from .rtvq import RTVQQuantizer
 
 
@@ -287,9 +287,6 @@ def apply_merged_deltas(
             merged_state_dict[param_name] = base_param.clone()
     
     return merged_state_dict
-
-
-from typing import Tuple
 
 
 def merge_with_clustering(

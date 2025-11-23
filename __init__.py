@@ -1,2 +1,2 @@
-# Package init for svd_hybrid_clip
-from .config import SVDHybridConfig
+# Package init for SVD-Quantization-Task-Merging
+# Legacy init - kept for compatibility
