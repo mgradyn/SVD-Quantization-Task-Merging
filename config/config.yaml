@@ -1,0 +1,21 @@
+# Main configuration file for SVD-Quantization-Task-Merging
+
+# Method selection
+method: svd_hybrid  # Options: svd_hybrid, task_arithmetic, ties, etc.
+
+# Task configuration
+tasks: []  # List of task identifiers (override via command line)
+
+# Paths
+checkpoint_dir: ""       # Directory containing task checkpoints
+base_model_path: ""      # Path to base model checkpoint
+mask_dir: ""             # Directory containing tall masks (optional)
+output_dir: "./output"   # Output directory
+artifact_dir: "./artifacts"  # Artifact storage directory
+
+# Device
+device: cuda  # cuda or cpu
+
+# Method-specific configuration (loaded from config/method/*.yaml)
+defaults:
+  - method: svd_hybrid
