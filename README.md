@@ -1,91 +1,186 @@
-This module implements the three-phase SVD-Hybrid Merging approach for multi-task CLIP ViT-B/32 fine-tuned models (Cars, EuroSAT, DTD, SUN397) combining ideas from:
-- TallMasks (localizing task information)
-- Task Vector Quantization (TVQ) for memory-efficient storage of low-energy coefficients.
+# SVD-Quantization-Task-Merging
+
+Advanced model merging techniques combining SVD-based compression with task vector quantization.
 
 ## Overview
 
-Phases:
+This repository implements multiple merging methods for multi-task models:
 
-1. Basis Construction (Offline)
-   - For each selected layer, stack task deltas (fine-tuned checkpoint weights minus base CLIP weights).
-   - Run SVD → obtain U; choose rank k by cumulative energy threshold; split U into U_high (signal) and U_low (noise).
+### SVD-Hybrid (Tall Mask + TVQ)
 
-2. Task Compression (Per Task)
-   - Project each delta: c_high = U_high^T τ, c_low = U_low^T τ.
-   - Store c_high in FP16; quantize c_low with 2-bit RTVQ (TVQ).
+An advanced merging method that combines:
+- **Tall Mask localization**: Binary masks to identify task-specific parameters
+- **SVD basis construction**: Energy-based decomposition of task vectors
+- **Residual quantization**: Multi-stage RTVQ for efficient storage
+- **Weighted averaging**: Performance-based and cluster-based task weighting
 
-3. Merging (Runtime)
-   - Average all FP16 c_high vectors → c_avg_high.
-   - Dequantize & average all c_low → c_avg_low.
-   - Reconstruct merged delta: τ_final = U_high c_avg_high + U_low c_avg_low.
-   - Apply to base weights to form merged model.
+Key features:
+- FP16 storage for high-energy coefficients
+- 4-bit multi-stage residual quantization for low-energy coefficients
+- Per-parameter SVD with energy-based rank selection
+- Support for masked (signal) and unmasked (noise) regions
+- Full artifact storage and reload capability
+- Comprehensive diagnostics and compression metrics
 
-## Folder Structure
+### Legacy Implementation
 
-```
-svd_hybrid_clip/
-  config.py
-  clip_loader.py
-  task_collection.py
-  svd_basis.py
-  compression.py
-  merging.py
-  evaluation.py
-  run_light_experiment.py
-  tvq_adapter.py
-  README.md
-```
+The original three-phase approach for CLIP ViT-B/32 models is still available in the root directory.
 
-## Initial Task Set (Light)
+## Quick Start
 
-Cars, EuroSAT, DTD, SUN397 (4 tasks):
-- Use publicly available fine-tuned CLIP ViT-B/32 checkpoints (from Task Arithmetic or your tall_masks pipeline).
-- Provide a list of checkpoint paths or HF hub IDs in `run_light_experiment.py`.
+### Installation
 
-## Selecting Layers
-
-To keep it light:
-- Only a subset of transformer blocks (e.g., blocks 0, 6, 11).
-- For each block: attention projection weights (qkv or in_proj), and MLP weights (fc1, fc2).
-
-## Rank Selection
-
-Default: retain ≥ 90% of cumulative energy, capped at k ≤ 32.
-
-## Validation
-
-Three metrics:
-1. Reconstruction error per task per layer.
-2. Accuracy on validation subsets for each dataset.
-3. Compression ratio vs. raw FP16 deltas.
-
-## Steps to Run
-
-1. Gather base CLIP model (OpenAI CLIP) and fine-tuned checkpoints.
-2. Edit `TASK_CHECKPOINTS` in `run_light_experiment.py`.
-3. Run:
-   ```bash
-   python svd_hybrid_clip/run_light_experiment.py --data-root /path/to/datasets --output-root ./svd_out
-   ```
-4. Inspect logs for:
-   - Chosen rank per layer
-   - Reconstruction errors
-   - Per-task and merged accuracy
-
-## Integrating TVQ
-
-Replace stub quantizer in `tvq_adapter.py` with actual functions from the `AIM-SKKU/TVQ` repo.
-
-Example pattern (hypothetical):
-```python
-from tvq.rtvq import RTVQQuantizer
-quantizer = RTVQQuantizer(bit_width=2)
-q_obj = quantizer.quantize(c_low)      # returns structured quantized representation
-c_low_deq = quantizer.dequantize(q_obj)
+```bash
+pip install torch numpy scikit-learn scipy
+# Optional for Hydra support
+pip install hydra-core
 ```
 
-## Extending
+### Running SVD-Hybrid
 
-- Add more tasks (8 → 14 → 20) by updating checkpoint list.
-- Add weighted averaging (e.g., weight tasks by validation accuracy).
-- Apply to all layers for improved synergy.
+```bash
+python src/main.py --method svd_hybrid \
+  --tasks cars eurosat dtd sun397 \
+  --checkpoint-dir ./checkpoints \
+  --base-model-path ./base_model.pt \
+  --mask-dir ./masks \
+  --output-dir ./output
+```
+
+See [docs/svd_hybrid.md](docs/svd_hybrid.md) for detailed documentation.
+
+## Repository Structure
+
+```
+.
+├── src/
+│   ├── svd_hybrid/           # Advanced SVD-Hybrid implementation
+│   │   ├── config.py         # Configuration dataclass
+│   │   ├── mask_loader.py    # Tall Masks loading
+│   │   ├── task_vector_loader.py  # Task vector extraction
+│   │   ├── basis.py          # SVD basis construction
+│   │   ├── rtvq.py           # Residual quantization
+│   │   ├── weighting.py      # Task weighting strategies
+│   │   ├── clustering.py     # Task clustering
+│   │   ├── compress.py       # Compression pipeline
+│   │   ├── merge.py          # Merging logic
+│   │   ├── storage.py        # Artifact storage/loading
+│   │   ├── diagnostics.py    # Metrics and analysis
+│   │   ├── cli.py            # Command-line interface
+│   │   └── hydra_entry.py    # Hydra integration
+│   └── main.py               # Main dispatcher
+├── scripts/
+│   └── run_svd_hybrid.py     # Convenience runner
+├── config/
+│   ├── config.yaml           # Main configuration
+│   └── method/
+│       └── svd_hybrid.yaml   # SVD-Hybrid parameters
+├── tests/
+│   ├── test_rank_selection.py  # Rank selection tests
+│   └── test_rtvq.py          # Quantization tests
+├── docs/
+│   └── svd_hybrid.md         # Detailed documentation
+├── load_and_merge.py         # Artifact reconstruction
+└── (legacy files)            # Original implementation
+```
+
+## Features
+
+### SVD-Hybrid Method
+
+- **Mask Strategies**: Union, intersection, or majority voting for combining tall masks
+- **Adaptive Rank Selection**: Energy-based threshold with configurable caps
+- **Multi-Stage Quantization**: 2-8 bit RTVQ with residual refinement
+- **Task Weighting**: 
+  - Uniform (equal weights)
+  - Performance-based (softmax of validation accuracies)
+  - Cluster-based (group similar tasks)
+- **Artifact Storage**: Save bases, coefficients, and diagnostics for later reconstruction
+- **Comprehensive Diagnostics**: Per-parameter and global reconstruction errors, compression ratios
+
+### Example Configurations
+
+**Basic Merge (Uniform Weighting)**:
+```bash
+python src/main.py --method svd_hybrid \
+  --tasks task1 task2 task3 task4 \
+  --checkpoint-dir ./ckpts \
+  --base-model-path ./base.pt \
+  --output-dir ./output
+```
+
+**Performance-Weighted Merge**:
+```bash
+python scripts/run_svd_hybrid.py \
+  --tasks task1 task2 task3 task4 \
+  --checkpoint-dir ./ckpts \
+  --base-model-path ./base.pt \
+  --weighting performance \
+  --performance-file ./accuracies.json \
+  --output-dir ./output
+```
+
+**Cluster-Based Merge**:
+```bash
+python scripts/run_svd_hybrid.py \
+  --tasks task1 task2 task3 task4 task5 task6 \
+  --checkpoint-dir ./ckpts \
+  --base-model-path ./base.pt \
+  --weighting cluster \
+  --cluster-k 3 \
+  --output-dir ./output
+```
+
+**High-Quality Merge with Artifacts**:
+```bash
+python scripts/run_svd_hybrid.py \
+  --tasks task1 task2 task3 task4 \
+  --checkpoint-dir ./ckpts \
+  --base-model-path ./base.pt \
+  --mask-dir ./masks \
+  --energy-threshold 0.95 \
+  --max-rank 64 \
+  --low-bits 6 \
+  --rtvq-stages 3 \
+  --store-artifacts \
+  --artifact-dir ./artifacts \
+  --output-dir ./output
+```
+
+## Testing
+
+Run tests to verify implementation:
+
+```bash
+# Install pytest
+pip install pytest
+
+# Run all tests
+pytest tests/ -v
+
+# Run specific tests
+pytest tests/test_rank_selection.py -v
+pytest tests/test_rtvq.py -v
+```
+
+## Legacy Implementation
+
+The original CLIP-based implementation is available in the root directory. See files:
+- `run_light_experiment.py`
+- `config.py`, `svd_basis.py`, `compression.py`, etc.
+
+To run the legacy version:
+```bash
+python run_light_experiment.py --data-root /path/to/datasets --output-root ./svd_out
+```
+
+## Documentation
+
+- [docs/svd_hybrid.md](docs/svd_hybrid.md) - Detailed SVD-Hybrid documentation with mathematical foundations, usage examples, and troubleshooting
+
+## Citation
+
+If you use this work, please cite the relevant papers:
+- Task Arithmetic
+- Tall Masks
+- Task Vector Quantization (TVQ)
