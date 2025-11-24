@@ -25,20 +25,20 @@ def run_svd_hybrid(config: SVDHybridConfig) -> Dict:
     return run_svd_hybrid_pipeline(config)
 
 
-def main(args):
+def main(args=None):
     """
     Main entry point when called from src/main.py dispatcher.
     
     Args:
-        args: Parsed command-line arguments from dispatcher
+        args: Parsed command-line arguments from dispatcher (unused, kept for compatibility)
         
     Returns:
         Results dictionary from run_svd_hybrid_pipeline
     """
-    # Import here to avoid circular imports
+    # The dispatcher passes args but cli_main handles its own argument parsing,
+    # so we simply delegate. The sys.argv has already been reconstructed by the dispatcher.
     from .cli import main as cli_main
     
-    # Delegate to CLI main which handles argument parsing and execution
     return cli_main()
 
 

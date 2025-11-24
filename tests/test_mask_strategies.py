@@ -123,7 +123,7 @@ def test_majority_strategy_odd_tasks():
     # Position 3: 0 True -> False
     expected = torch.tensor([True, True, True, False])
     
-    assert torch.equal(combined["layer.weight"], expected) if "layer.weight" in combined else torch.equal(combined["param"], expected)
+    assert torch.equal(combined["param"], expected)
 
 
 def test_empty_masks():
