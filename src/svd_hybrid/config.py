@@ -10,8 +10,8 @@ class SVDHybridConfig:
     """Configuration for SVD-Hybrid merging method."""
     
     # SVD parameters
-    svd_energy_threshold: float = 0.90
-    svd_max_rank: int = 128
+    svd_energy_threshold: float = 0.95
+    svd_max_rank: int = 64
     svd_center: bool = True
     svd_fp16: bool = True
     
@@ -25,7 +25,7 @@ class SVDHybridConfig:
     
     # Weighting parameters
     svd_weighting: str = "uniform"  # uniform, performance, cluster
-    svd_weighting_temperature: float = 1.0
+    svd_weighting_temperature: float = 5.0
     svd_cluster_k: int = 2
     
     # Storage and evaluation
@@ -35,10 +35,11 @@ class SVDHybridConfig:
     # Advanced options
     svd_noise_shrink: float = 0.5
     svd_min_mask_size: int = 10
-    svd_randomized_svd_threshold: int = 10000000  # Use randomized SVD if D*N > threshold
+    svd_randomized_svd_threshold: int = 1500000  # Use randomized SVD if D*N > threshold (svd_fallback_threshold)
     
     # Task and checkpoint paths
     tasks: List[str] = field(default_factory=list)
+    model: str = "ViT-B-32"  # Model identifier (e.g., ViT-B-32)
     checkpoint_dir: str = ""
     base_model_path: str = ""
     mask_dir: str = ""

@@ -222,6 +222,17 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
     print("\nSaving merged model...")
     save_merged_model(merged_state_dict, config.output_dir)
     
+    # Save weights and clusters separately for convenience
+    import json
+    os.makedirs(config.output_dir, exist_ok=True)
+    
+    with open(os.path.join(config.output_dir, "weights.json"), 'w') as f:
+        json.dump(weights, f, indent=2)
+    
+    if cluster_assignments:
+        with open(os.path.join(config.output_dir, "clusters.json"), 'w') as f:
+            json.dump(cluster_assignments, f, indent=2)
+    
     print("\n" + "="*60)
     print("SVD-Hybrid merging complete!")
     print("="*60)
@@ -243,6 +254,8 @@ def parse_args():
     # Task configuration
     parser.add_argument("--tasks", nargs="+", required=True,
                        help="List of task identifiers")
+    parser.add_argument("--model", type=str, default="ViT-B-32",
+                       help="Model identifier (e.g., ViT-B-32)")
     parser.add_argument("--checkpoint-dir", type=str, required=True,
                        help="Directory containing task checkpoints")
     parser.add_argument("--base-model-path", type=str, required=True,
@@ -251,9 +264,9 @@ def parse_args():
                        help="Directory containing tall masks")
     
     # SVD parameters
-    parser.add_argument("--energy-threshold", type=float, default=0.90,
+    parser.add_argument("--energy-threshold", type=float, default=0.95,
                        help="Energy retention threshold for rank selection")
-    parser.add_argument("--max-rank", type=int, default=128,
+    parser.add_argument("--max-rank", type=int, default=64,
                        help="Maximum rank cap")
     parser.add_argument("--center", action="store_true", default=True,
                        help="Center task matrix before SVD")
@@ -285,7 +298,7 @@ def parse_args():
                        help="Task weighting strategy")
     parser.add_argument("--performance-file", type=str, default=None,
                        help="Path to performance metrics JSON file")
-    parser.add_argument("--weighting-temperature", type=float, default=1.0,
+    parser.add_argument("--temperature", type=float, default=5.0,
                        help="Temperature for performance-based weighting")
     parser.add_argument("--cluster-k", type=int, default=2,
                        help="Number of clusters for cluster-based weighting")
@@ -319,6 +332,7 @@ def main():
     # Create config from args
     config = SVDHybridConfig(
         tasks=args.tasks,
+        model=args.model,
         checkpoint_dir=args.checkpoint_dir,
         base_model_path=args.base_model_path,
         mask_dir=args.mask_dir,
@@ -333,7 +347,7 @@ def main():
         svd_noise_shrink=args.noise_shrink,
         svd_weighting=args.weighting,
         performance_file=args.performance_file,
-        svd_weighting_temperature=args.weighting_temperature,
+        svd_weighting_temperature=args.temperature,
         svd_cluster_k=args.cluster_k,
         svd_store_artifacts=args.store_artifacts,
         svd_eval_reconstruction=args.eval_reconstruction,

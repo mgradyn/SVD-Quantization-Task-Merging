@@ -1,8 +1,8 @@
 # SVD-Hybrid merging method configuration
 
 # SVD parameters
-svd_energy_threshold: 0.90  # Retain this fraction of cumulative energy
-svd_max_rank: 128           # Maximum rank cap
+svd_energy_threshold: 0.95  # Retain this fraction of cumulative energy
+svd_max_rank: 64            # Maximum rank cap
 svd_center: true            # Mean-center task matrix before SVD
 svd_fp16: true              # Use FP16 for bases and high coefficients
 
@@ -17,7 +17,7 @@ svd_noise_shrink: 0.5       # Shrinkage factor for noise region
 
 # Weighting parameters
 svd_weighting: uniform      # uniform, performance, or cluster
-svd_weighting_temperature: 1.0  # Temperature for performance-based weighting
+svd_weighting_temperature: 5.0  # Temperature for performance-based weighting
 svd_cluster_k: 2            # Number of clusters for cluster-based weighting
 performance_file: null      # Path to performance metrics JSON (optional)
 
@@ -27,4 +27,4 @@ svd_eval_reconstruction: true  # Evaluate reconstruction error
 
 # Advanced options
 svd_min_mask_size: 10       # Minimum mask size to process
-svd_randomized_svd_threshold: 10000000  # Use randomized SVD if D*N > threshold
+svd_randomized_svd_threshold: 1500000  # Use randomized SVD if D*N > threshold (svd_fallback_threshold)

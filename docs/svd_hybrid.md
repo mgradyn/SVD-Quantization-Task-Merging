@@ -88,6 +88,28 @@ Apply to base: $\bar{\theta} = \theta_0 + \bar{\tau}$
 
 ## Usage
 
+### Full Example: CLIP ViT-B/32 with 8 Tasks
+
+Complete example merging 8 task-specific CLIP models with performance weighting:
+
+```bash
+python src/main.py --method svd_hybrid --model ViT-B-32 \
+  --energy-threshold 0.95 --max-rank 64 \
+  --tasks Eurosat Cars DTD SUN397 RESISC45 SVHN GTSRB MNIST \
+  --low-bits 4 --rtvq-stages 2 --weighting performance \
+  --mask-strategy union --store-artifacts --eval-reconstruction \
+  --checkpoint-dir ./checkpoints \
+  --base-model-path ./base_model.pt \
+  --mask-dir ./masks \
+  --output-dir ./output
+```
+
+This will produce:
+- `output/merged_state_dict.pt` - Merged model
+- `output/diagnostics.json` - Detailed metrics
+- `output/weights.json` - Task weights used
+- `artifacts/` - Bases, coefficients, and quantization payloads
+
 ### Basic Command
 
 ```bash
@@ -189,7 +211,16 @@ artifacts/
 
 ### Reconstructing from Artifacts
 
+Reconstruct the merged model from saved artifacts without needing the original task checkpoints:
+
 ```bash
+# Using the reload module
+python -m src.svd_hybrid.reload \
+  --artifact-dir ./artifacts \
+  --base-model-path ./base_model.pt \
+  --output-path ./reconstructed_model.pt
+
+# Or using the root-level script
 python load_and_merge.py \
   --artifact-dir ./artifacts \
   --base-model-path ./base_model.pt \
