@@ -222,6 +222,17 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
     print("\nSaving merged model...")
     save_merged_model(merged_state_dict, config.output_dir)
     
+    # Save weights and clusters separately for convenience
+    import json
+    os.makedirs(config.output_dir, exist_ok=True)
+    
+    with open(os.path.join(config.output_dir, "weights.json"), 'w') as f:
+        json.dump(weights, f, indent=2)
+    
+    if cluster_assignments:
+        with open(os.path.join(config.output_dir, "clusters.json"), 'w') as f:
+            json.dump(cluster_assignments, f, indent=2)
+    
     print("\n" + "="*60)
     print("SVD-Hybrid merging complete!")
     print("="*60)
