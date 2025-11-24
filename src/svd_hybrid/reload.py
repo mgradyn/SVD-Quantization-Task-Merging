@@ -13,6 +13,88 @@ from .weighting import compute_uniform_weights
 from .task_vector_loader import load_checkpoint
 
 
+def reload_merged_model_from_artifacts(
+    artifact_dir: str,
+    device: str = "cpu"
+) -> Dict[str, torch.Tensor]:
+    """
+    Reload merged model state dict from artifacts directory.
+    
+    This function expects the artifacts directory to contain a pre-computed
+    merged model file (merged_state_dict.pt) or will reconstruct from
+    stored coefficients.
+    
+    Args:
+        artifact_dir: Directory containing saved artifacts
+        device: Device to use ('cuda' or 'cpu')
+        
+    Returns:
+        Merged model state dictionary
+    """
+    import os
+    
+    # First, try to load pre-saved merged model
+    merged_model_path = os.path.join(artifact_dir, "merged_state_dict.pt")
+    if os.path.exists(merged_model_path):
+        print(f"Loading pre-saved merged model from {merged_model_path}")
+        merged_state_dict = torch.load(merged_model_path, map_location=device)
+        return merged_state_dict
+    
+    # If not available, reconstruct from artifacts
+    print(f"No pre-saved merged model found, reconstructing from artifacts...")
+    
+    artifacts = load_all_artifacts(artifact_dir, device=device)
+    
+    bases = artifacts["bases"]
+    compressed = artifacts["compressed"]
+    config = artifacts["config"]
+    diagnostics = artifacts["diagnostics"]
+    
+    # Get task names
+    task_names = list(diagnostics.get("task_weights", {}).keys())
+    if not task_names:
+        first_param = next(iter(compressed.values()))
+        task_names = list(first_param.keys())
+    
+    # Get weights
+    if "task_weights" in diagnostics:
+        weights = diagnostics["task_weights"]
+    else:
+        weights = compute_uniform_weights(task_names)
+    
+    # Get shapes
+    original_shapes = {}
+    for param_name, param_diag in diagnostics.get("per_parameter", {}).items():
+        if "original_shape" in param_diag:
+            original_shapes[param_name] = torch.Size(param_diag["original_shape"])
+    
+    masks = {}
+    
+    # Merge parameters
+    merged_deltas = merge_all_parameters(
+        compressed,
+        bases,
+        masks,
+        weights,
+        original_shapes,
+        config,
+        device=device
+    )
+    
+    # Load base model
+    base_model_path = config.get("base_model_path", "")
+    if not base_model_path or not os.path.exists(base_model_path):
+        raise FileNotFoundError(
+            f"Base model path not found in config or doesn't exist: {base_model_path}. "
+            "Please provide base model path in artifacts config or use reconstruct_from_artifacts instead."
+        )
+    
+    base_state_dict = load_checkpoint(base_model_path, device=device)
+    merged_state_dict = apply_merged_deltas(base_state_dict, merged_deltas, device=device)
+    
+    return merged_state_dict
+
+
 def reconstruct_from_artifacts(
     artifact_dir: str,
     base_model_path: str,

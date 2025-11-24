@@ -1,0 +1,28 @@
+{
+  "description": "Configuration for quantizing task vectors",
+  "quantization": {
+    "method": "asymmetric",
+    "task_bits": 8,
+    "base_bits": 8,
+    "skip_int64": true,
+    "skip_uint8": true
+  },
+  "tasks": [
+    "EuroSAT",
+    "Cars",
+    "DTD",
+    "SUN397",
+    "RESISC45",
+    "SVHN",
+    "GTSRB",
+    "MNIST"
+  ],
+  "checkpoints": {
+    "base_model_path": "./checkpoints/base_model.pt",
+    "checkpoint_dir": "./checkpoints/finetuned"
+  },
+  "output": {
+    "output_dir": "./quantized_models",
+    "save_diagnostics": true
+  }
+}
