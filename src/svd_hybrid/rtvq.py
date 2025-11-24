@@ -35,14 +35,23 @@ def asymmetric_quantization(
         quantized = torch.zeros_like(tensor, dtype=torch.uint8)
         return quantized, scale, zero_point
     
-    # Compute scale and zero point
+    # Compute scale and zero point following TVQ reference implementation:
+    # scale = (qmax - qmin) / (X_max - X_min)
+    # zero_point = -round(scale * X_min)
+    # X_q = round(scale * X + zero_point).clamp(qmin, qmax)
     n_levels = 2 ** num_bits
-    scale = (max_val - min_val) / (n_levels - 1)
-    zero_point = min_val
+    qmin = 0
+    qmax = n_levels - 1
+    
+    scale = (qmax - qmin) / (max_val - min_val)
+    zero_point = -torch.round(scale * min_val)
+    
+    # Clamp zero_point to valid range
+    zero_point = torch.clamp(zero_point, qmin, qmax)
     
     # Quantize
-    normalized = (tensor - zero_point) / scale
-    quantized = torch.clamp(torch.round(normalized), 0, n_levels - 1)
+    quantized = torch.round(scale * tensor + zero_point)
+    quantized = torch.clamp(quantized, qmin, qmax)
     quantized = quantized.to(torch.uint8)
     
     return quantized, scale, zero_point
@@ -56,6 +65,9 @@ def asymmetric_dequantization(
     """
     Dequantize asymmetrically quantized tensor.
     
+    Following reference implementation:
+        X_recon = (X_q - zero_point) / scale
+    
     Args:
         quantized: Quantized indices
         scale: Scale factor
@@ -64,7 +76,7 @@ def asymmetric_dequantization(
     Returns:
         Dequantized tensor
     """
-    dequantized = quantized.float() * scale + zero_point
+    dequantized = (quantized.float() - zero_point) / scale
     return dequantized
 
 

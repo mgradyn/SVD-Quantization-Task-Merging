@@ -251,17 +251,34 @@ def parse_args():
         description="SVD-Hybrid merging method combining Tall Masks and TVQ"
     )
     
+    # Config file options
+    parser.add_argument("--config", type=str, default=None,
+                       help="Path to JSON config file (overrides command-line args)")
+    parser.add_argument("--quantize-config", type=str, default=None,
+                       help="Path to quantization config JSON")
+    parser.add_argument("--load-config", type=str, default=None,
+                       help="Path to loading config JSON")
+    
     # Task configuration
-    parser.add_argument("--tasks", nargs="+", required=True,
+    parser.add_argument("--tasks", nargs="+",
                        help="List of task identifiers")
     parser.add_argument("--model", type=str, default="ViT-B-32",
                        help="Model identifier (e.g., ViT-B-32)")
-    parser.add_argument("--checkpoint-dir", type=str, required=True,
+    parser.add_argument("--checkpoint-dir", type=str,
                        help="Directory containing task checkpoints")
-    parser.add_argument("--base-model-path", type=str, required=True,
+    parser.add_argument("--base-model-path", type=str,
                        help="Path to base model checkpoint")
     parser.add_argument("--mask-dir", type=str, default="",
                        help="Directory containing tall masks")
+    
+    # TVQ-specific loading options
+    parser.add_argument("--load-tv-type", type=str, default=None,
+                       choices=["standard", "quantized", "quantized_finetuned", "quantized_base_and_tv"],
+                       help="Type of task vector to load")
+    parser.add_argument("--load-task-bits", type=int, default=8,
+                       help="Bits for task vector quantization when loading")
+    parser.add_argument("--load-base-bits", type=int, default=8,
+                       help="Bits for base model quantization when loading")
     
     # SVD parameters
     parser.add_argument("--energy-threshold", type=float, default=0.95,
@@ -329,12 +346,57 @@ def main():
     """Main CLI entry point."""
     args = parse_args()
     
+    # Load JSON config if specified
+    import json
+    config_overrides = {}
+    
+    if args.config:
+        with open(args.config, 'r') as f:
+            config_overrides = json.load(f)
+        print(f"Loaded config from {args.config}")
+    
+    if args.quantize_config:
+        with open(args.quantize_config, 'r') as f:
+            quant_config = json.load(f)
+        print(f"Loaded quantization config from {args.quantize_config}")
+        # Merge quantization settings
+        if 'quantization' in quant_config:
+            config_overrides.update(quant_config['quantization'])
+        if 'tasks' in quant_config and not args.tasks:
+            config_overrides['tasks'] = quant_config['tasks']
+        if 'checkpoints' in quant_config:
+            config_overrides.update(quant_config['checkpoints'])
+    
+    if args.load_config:
+        with open(args.load_config, 'r') as f:
+            load_cfg = json.load(f)
+        print(f"Loaded loading config from {args.load_config}")
+        # Merge loading settings
+        if 'loading' in load_cfg:
+            config_overrides.update(load_cfg['loading'])
+        if 'tasks' in load_cfg and not args.tasks:
+            config_overrides['tasks'] = load_cfg['tasks']
+        if 'checkpoints' in load_cfg:
+            config_overrides.update(load_cfg['checkpoints'])
+    
+    # Apply config file values, then override with command-line args
+    tasks = config_overrides.get('tasks', args.tasks)
+    checkpoint_dir = config_overrides.get('checkpoint_dir', args.checkpoint_dir)
+    base_model_path = config_overrides.get('base_model_path', args.base_model_path)
+    
+    if not tasks:
+        raise ValueError("--tasks must be specified either via command-line or config file")
+    if not checkpoint_dir:
+        raise ValueError("--checkpoint-dir must be specified either via command-line or config file")
+    if not base_model_path:
+        raise ValueError("--base-model-path must be specified either via command-line or config file")
+    
     # Create config from args
     config = SVDHybridConfig(
-        tasks=args.tasks,
+        tasks=tasks,
         model=args.model,
-        checkpoint_dir=args.checkpoint_dir,
-        base_model_path=args.base_model_path,
+        checkpoint_dir=checkpoint_dir,
+        base_model_path=base_model_path,
         mask_dir=args.mask_dir,
         svd_energy_threshold=args.energy_threshold,
         svd_max_rank=args.max_rank,

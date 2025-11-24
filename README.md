@@ -156,6 +156,77 @@ python scripts/run_svd_hybrid.py \
   --output-dir ./output
 ```
 
+### Artifact Reconstruction and Reload
+
+After running SVD-Hybrid with `--store-artifacts`, you can reload the merged model from saved artifacts without needing the original finetuned checkpoints:
+
+```bash
+# Reload and verify
+python scripts/reload_svd_hybrid.py \
+  --artifact-dir ./svd_hybrid_output/ViT-B-32/artifacts \
+  --verify \
+  --merged-model-path ./svd_hybrid_output/merged_state_dict.pt \
+  --output-path ./reloaded_merged.pt
+
+# Or just reload without verification
+python scripts/reload_svd_hybrid.py \
+  --artifact-dir ./svd_hybrid_output/ViT-B-32/artifacts \
+  --output-path ./reloaded_merged.pt
+```
+
+The artifacts directory contains:
+- `bases/` - SVD bases for each parameter (U_high, U_low, singular values)
+- `compressed/` - Quantized coefficients for each task
+- `diagnostics.json` - Reconstruction errors and compression metrics
+- `config.json` - Configuration used for merging
+- `weights.json` - Task weights used
+- `clusters.json` - Cluster assignments (if clustering was used)
+
+## Core Modules
+
+### Task Vector Quantization (TVQ)
+
+The repository includes core TVQ utilities:
+
+**quantization_utils.py** - Core quantization functions:
+- `absmax_quantization(X, qbit)` - Symmetric signed quantization (int8/int16)
+- `asymmetric_quantization(X, qbit)` - Min-max unsigned quantization (uint8)
+- `quantization_error_check()` - Compute L1/L2 reconstruction errors
+- `quantization_error_check_asymmetric()` - Error metrics for asymmetric quantization
+
+**task_vectors.py** - Task vector classes:
+- `TaskVector` - Compute and manipulate task vectors (delta = finetuned - pretrained)
+- `QuantizedTaskVector` - Reconstruct from quantized deltas
+- `QuantizedFinetunedModel` - Store finetuned model as quantized weights
+- `QuantizedBaseAndTaskVector` - Residual storage (quantized base + quantized delta)
+
+Example usage:
+```python
+from task_vectors import TaskVector
+from quantization_utils import asymmetric_quantization, quantization_error_check_asymmetric
+
+# Create task vector
+tv = TaskVector("base_model.pt", "finetuned_model.pt", task_name="Cars")
+
+# Apply to base model
+merged = tv.apply_to("base_model.pt")
+
+# Quantize
+for key, delta in tv.vector.items():
+    q_indices, scale, zero_point = asymmetric_quantization(delta, qbit=8)
+    metrics = quantization_error_check_asymmetric(delta, q_indices, scale, zero_point)
+    print(f"{key}: L1 relative error = {metrics['l1_relative']:.6f}")
+```
+
+### Dataset Constants
+
+The 8 standard evaluation tasks are centralized in `dataset_constants.py`:
+```python
+from dataset_constants import STANDARD_8_TASKS, normalize_task_name
+
+tasks = STANDARD_8_TASKS  # ['EuroSAT', 'Cars', 'DTD', 'SUN397', 'RESISC45', 'SVHN', 'GTSRB', 'MNIST']
+```
+
 ## Testing
 
 Run tests to verify implementation:
@@ -170,6 +241,7 @@ pytest tests/ -v
 # Run specific tests
 pytest tests/test_rank_selection.py -v
 pytest tests/test_rtvq.py -v
+pytest tests/test_mask_strategies.py -v
 ```
 
 ## Legacy Implementation

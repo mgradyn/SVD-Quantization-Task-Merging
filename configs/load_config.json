@@ -1,0 +1,32 @@
+{
+  "description": "Configuration for loading and merging quantized task vectors",
+  "loading": {
+    "load_tv_type": "quantized",
+    "load_task_bits": 8,
+    "load_base_bits": 8,
+    "method": "asymmetric"
+  },
+  "tasks": [
+    "EuroSAT",
+    "Cars",
+    "DTD",
+    "SUN397",
+    "RESISC45",
+    "SVHN",
+    "GTSRB",
+    "MNIST"
+  ],
+  "checkpoints": {
+    "base_model_path": "./checkpoints/base_model.pt",
+    "quantized_dir": "./quantized_models"
+  },
+  "merging": {
+    "method": "task_arithmetic",
+    "weights": "uniform",
+    "scaling_factor": 1.0
+  },
+  "output": {
+    "output_path": "./merged_model.pt",
+    "save_diagnostics": true
+  }
+}
