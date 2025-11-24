@@ -139,12 +139,12 @@ def test_constant_tensor():
     
     # Absmax - all values should be the same
     X_q, scale = quantization_utils.absmax_quantization(X, qbit=8)
-    assert X_q.float().std() == 0  # All quantized to same value (127 for positive constant)
+    assert X_q.float().std() < 1e-6  # All quantized to same value (127 for positive constant)
     
     # Asymmetric - when handled as constant, should return all zeros
     X_zero = torch.ones(50) * 0.0
     X_q, scale, zero_point = quantization_utils.asymmetric_quantization(X_zero, qbit=8)
-    assert X_q.float().std() < 0.1  # Should all be zero
+    assert X_q.float().std() < 1e-6  # Should all be zero
 
 
 def test_empty_tensor():

@@ -11,6 +11,7 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import task_vectors
+import quantization_utils
 
 
 def create_dummy_model_state():
@@ -120,8 +121,6 @@ def test_task_vector_apply_to():
 
 def test_quantized_task_vector_asymmetric():
     """Test QuantizedTaskVector with asymmetric quantization."""
-    import quantization_utils
-    
     # Create task vector
     pretrained = {"weight": torch.randn(5, 5)}
     finetuned = {"weight": torch.randn(5, 5)}
@@ -154,8 +153,6 @@ def test_quantized_task_vector_asymmetric():
 
 def test_quantized_task_vector_apply():
     """Test applying quantized task vector to model."""
-    import quantization_utils
-    
     # Use non-constant tensors to avoid degenerate quantization
     pretrained = {"weight": torch.randn(3, 3)}
     finetuned = {"weight": pretrained["weight"] + torch.randn(3, 3) * 0.5}

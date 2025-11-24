@@ -465,23 +465,4 @@ class QuantizedBaseAndTaskVector:
         
         return result_state
     
-    def load_from_checkpoint(
-        self,
-        key: str,
-        key_qscale: str,
-        key_qzeropoint: Optional[str] = None
-    ) -> torch.Tensor:
-        """
-        Load parameter from quantized representation using TVQ naming convention.
-        
-        Args:
-            key: Parameter name
-            key_qscale: Scale key name
-            key_qzeropoint: Zero point key name (for asymmetric)
-            
-        Returns:
-            Reconstructed parameter
-        """
-        # This method would be used when loading from saved checkpoint files
-        # that store quantized parameters with _qscale and _qzeropoint suffixes
-        raise NotImplementedError("Checkpoint loading not implemented in this version")
+

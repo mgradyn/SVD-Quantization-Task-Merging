@@ -35,7 +35,7 @@ def asymmetric_quantization(
         quantized = torch.zeros_like(tensor, dtype=torch.uint8)
         return quantized, scale, zero_point
     
-    # Compute scale and zero point following TVQ reference implementation
+    # Compute scale and zero point following TVQ reference implementation:
     # scale = (qmax - qmin) / (X_max - X_min)
     # zero_point = -round(scale * X_min)
     # X_q = round(scale * X + zero_point).clamp(qmin, qmax)
