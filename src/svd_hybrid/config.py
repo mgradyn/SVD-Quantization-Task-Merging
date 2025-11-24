@@ -39,6 +39,7 @@ class SVDHybridConfig:
     
     # Task and checkpoint paths
     tasks: List[str] = field(default_factory=list)
+    model: str = "ViT-B-32"  # Model identifier (e.g., ViT-B-32)
     checkpoint_dir: str = ""
     base_model_path: str = ""
     mask_dir: str = ""

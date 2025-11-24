@@ -100,6 +100,15 @@ See [docs/svd_hybrid.md](docs/svd_hybrid.md) for detailed documentation.
 
 ### Example Configurations
 
+**Full Example (CLIP ViT-B/32 with 8 Tasks)**:
+```bash
+python src/main.py --method svd_hybrid --model ViT-B-32 \
+  --energy-threshold 0.95 --max-rank 64 \
+  --tasks Eurosat Cars DTD SUN397 RESISC45 SVHN GTSRB MNIST \
+  --low-bits 4 --rtvq-stages 2 --weighting performance \
+  --mask-strategy union --store-artifacts --eval-reconstruction
+```
+
 **Basic Merge (Uniform Weighting)**:
 ```bash
 python src/main.py --method svd_hybrid \

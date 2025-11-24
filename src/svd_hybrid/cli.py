@@ -243,6 +243,8 @@ def parse_args():
     # Task configuration
     parser.add_argument("--tasks", nargs="+", required=True,
                        help="List of task identifiers")
+    parser.add_argument("--model", type=str, default="ViT-B-32",
+                       help="Model identifier (e.g., ViT-B-32)")
     parser.add_argument("--checkpoint-dir", type=str, required=True,
                        help="Directory containing task checkpoints")
     parser.add_argument("--base-model-path", type=str, required=True,
@@ -319,6 +321,7 @@ def main():
     # Create config from args
     config = SVDHybridConfig(
         tasks=args.tasks,
+        model=args.model,
         checkpoint_dir=args.checkpoint_dir,
         base_model_path=args.base_model_path,
         mask_dir=args.mask_dir,
