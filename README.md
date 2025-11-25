@@ -66,6 +66,31 @@ python src/main.py --method svd_hybrid \
 
 See [docs/svd_hybrid.md](docs/svd_hybrid.md) for detailed documentation.
 
+### Google Colab Notebook
+
+For running experiments with CLIP models (ViT-B-16, ViT-B-32, ViT-L-14) on 8 tasks, use the provided Colab notebook:
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/mgradyn/SVD-Quantization-Task-Merging/blob/main/notebooks/SVD_Hybrid_8Task_Experiment.ipynb)
+
+The notebook expects checkpoints in your Google Drive with this structure:
+```
+My Drive/clip_finetune/
+├── ViT-B-16/
+│   ├── Cars/finetuned.pt
+│   ├── DTD/finetuned.pt
+│   ├── EuroSAT/finetuned.pt
+│   ├── GTSRB/finetuned.pt
+│   ├── MNIST/finetuned.pt
+│   ├── RESISC45/finetuned.pt
+│   ├── SUN397/finetuned.pt
+│   ├── SVHN/finetuned.pt
+│   └── {task}_head.pt (classification heads)
+├── ViT-B-32/
+│   └── ... (same structure)
+└── ViT-L-14/
+    └── ... (same structure)
+```
+
 ## Repository Structure
 
 ```
@@ -108,6 +133,9 @@ See [docs/svd_hybrid.md](docs/svd_hybrid.md) for detailed documentation.
 │
 ├── examples/                     # Usage examples
 │   └── example_usage.py         # Programmatic usage examples
+│
+├── notebooks/                    # Jupyter/Colab notebooks
+│   └── SVD_Hybrid_8Task_Experiment.ipynb  # 8-task experiment on CLIP models
 │
 ├── tests/                        # Test suite
 │   ├── __init__.py
