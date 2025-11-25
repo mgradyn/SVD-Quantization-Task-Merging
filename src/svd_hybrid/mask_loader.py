@@ -83,7 +83,7 @@ def load_single_mask(mask_path: str, device: str = "cpu") -> Dict[str, torch.Ten
         raise FileNotFoundError(f"Mask file not found: {mask_path}")
     
     # Load the mask dictionary
-    mask_dict = torch.load(mask_path, map_location=device)
+    mask_dict = torch.load(mask_path, map_location=device, weights_only=False)
     
     # Ensure all masks are boolean (convert if needed)
     for key, mask in mask_dict.items():

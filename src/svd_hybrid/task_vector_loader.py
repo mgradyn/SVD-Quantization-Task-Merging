@@ -78,7 +78,7 @@ def load_checkpoint(checkpoint_path: str, device: str = "cpu") -> Dict[str, torc
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
     
     # Load checkpoint (map_location='cpu' prevents GPU memory issues)
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
     # Handle different checkpoint formats
     if isinstance(checkpoint, dict):

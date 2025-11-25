@@ -133,13 +133,13 @@ class TaskVector:
         # Can accept either a file path (str) or an already-loaded state dict
         if isinstance(pretrained_checkpoint, str):
             # Load from file, map to CPU to avoid GPU memory issues with large models
-            pretrained_state = torch.load(pretrained_checkpoint, map_location='cpu')
+            pretrained_state = torch.load(pretrained_checkpoint, map_location='cpu', weights_only=False)
         else:
             pretrained_state = pretrained_checkpoint
         
         # Step 2: Load finetuned checkpoint
         if isinstance(finetuned_checkpoint, str):
-            finetuned_state = torch.load(finetuned_checkpoint, map_location='cpu')
+            finetuned_state = torch.load(finetuned_checkpoint, map_location='cpu', weights_only=False)
         else:
             finetuned_state = finetuned_checkpoint
         
@@ -295,7 +295,7 @@ class TaskVector:
         """
         # Load pretrained checkpoint
         if isinstance(pretrained_checkpoint, str):
-            pretrained_state = torch.load(pretrained_checkpoint, map_location='cpu')
+            pretrained_state = torch.load(pretrained_checkpoint, map_location='cpu', weights_only=False)
         else:
             # Make a copy to avoid modifying the input
             pretrained_state = pretrained_checkpoint.copy()
@@ -441,7 +441,7 @@ class QuantizedTaskVector:
         """
         # Load pretrained model
         if isinstance(pretrained_checkpoint, str):
-            pretrained_state = torch.load(pretrained_checkpoint, map_location='cpu')
+            pretrained_state = torch.load(pretrained_checkpoint, map_location='cpu', weights_only=False)
         else:
             pretrained_state = pretrained_checkpoint.copy()
         
@@ -488,7 +488,7 @@ class QuantizedFinetunedModel:
             skip_uint8: Skip uint8 parameters
         """
         if isinstance(finetuned_checkpoint, str):
-            finetuned_state = torch.load(finetuned_checkpoint, map_location='cpu')
+            finetuned_state = torch.load(finetuned_checkpoint, map_location='cpu', weights_only=False)
         else:
             finetuned_state = finetuned_checkpoint
         
@@ -558,7 +558,7 @@ class QuantizedFinetunedModel:
             Task vector (delta) dictionary
         """
         if isinstance(pretrained_checkpoint, str):
-            pretrained_state = torch.load(pretrained_checkpoint, map_location='cpu')
+            pretrained_state = torch.load(pretrained_checkpoint, map_location='cpu', weights_only=False)
         else:
             pretrained_state = pretrained_checkpoint
         
@@ -606,7 +606,7 @@ class QuantizedBaseAndTaskVector:
         """
         # Load pretrained
         if isinstance(pretrained_checkpoint, str):
-            pretrained_state = torch.load(pretrained_checkpoint, map_location='cpu')
+            pretrained_state = torch.load(pretrained_checkpoint, map_location='cpu', weights_only=False)
         else:
             pretrained_state = pretrained_checkpoint
         
