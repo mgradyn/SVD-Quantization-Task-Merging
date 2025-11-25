@@ -202,7 +202,7 @@ def test_classification_head_with_weights():
     output = head(x)
     
     assert output.shape == (4, 100)
-    assert head.normalize == True
+    assert head.normalize is True
 
 
 def test_classification_head_normalize():

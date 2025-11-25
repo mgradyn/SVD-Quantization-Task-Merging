@@ -144,13 +144,14 @@ class ClassificationHead(nn.Linear):
         self.in_features = input_size
         self.num_classes = output_size
         
+        # Overwrite the weight/bias data (not the Parameter itself) to preserve registration
         if weights is not None:
-            self.weight = nn.Parameter(weights.clone())
+            self.weight.data.copy_(weights)
         if biases is not None:
-            self.bias = nn.Parameter(biases.clone())
+            self.bias.data.copy_(biases)
         else:
-            # Initialize bias to zeros - use output_size directly since self.bias is already initialized
-            self.bias = nn.Parameter(torch.zeros(output_size))
+            # Initialize bias to zeros using the existing bias parameter from nn.Linear
+            self.bias.data.zero_()
     
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         """
