@@ -1,6 +1,60 @@
 """
 SVD basis construction utilities with energy-based rank selection.
+
+=== TUTORIAL: Understanding SVD for Task Vector Merging ===
+
+Singular Value Decomposition (SVD) is a fundamental matrix factorization technique
+that decomposes any matrix into three components:
+
+    M = U × Σ × V^T
+
+Where:
+- U: Left singular vectors (column space basis)
+- Σ: Diagonal matrix of singular values (importance weights)
+- V^T: Right singular vectors (row space basis)
+
+=== WHY USE SVD FOR TASK VECTORS? ===
+
+When merging multiple task vectors, we stack them into a matrix where:
+- Each column is one task's delta vector
+- Each row is one parameter dimension
+
+SVD finds the "principal directions" that best explain the variation across tasks:
+- **High singular values** = Important directions shared across tasks
+- **Low singular values** = Less important or task-specific variations
+
+By keeping only high-energy components, we:
+1. **Compress** the representation (fewer coefficients to store)
+2. **Denoise** by removing low-variance components
+3. **Find commonality** across tasks
+
+=== ENERGY-BASED RANK SELECTION ===
+
+Instead of keeping a fixed number of components, we use "energy" (variance):
+
+    energy_i = σ_i² / Σ(σ_j²)
+
+We keep the smallest rank k such that:
+    
+    cumulative_energy(k) = (σ_1² + σ_2² + ... + σ_k²) / total_energy >= threshold
+
+This adapts to each parameter's structure automatically.
+
+=== EXAMPLE ===
+
+    >>> # Stack task deltas into matrix [D x N] where D=dims, N=num_tasks
+    >>> deltas = [task1_delta, task2_delta, task3_delta, task4_delta]  # Each is 1D
+    >>> 
+    >>> # Construct basis with 95% energy retention
+    >>> result = construct_basis(deltas, energy_threshold=0.95, max_rank=64)
+    >>> 
+    >>> # Result contains:
+    >>> # - U_high: High-energy basis [D x k] for storing in FP16
+    >>> # - U_low: Low-energy basis [D x (D-k)] for quantization
+    >>> # - k: Selected rank
+    >>> # - energy_retained: Actual energy fraction retained
 """
+
 import torch
 import numpy as np
 from typing import List, Dict, Tuple, Optional
@@ -13,22 +67,47 @@ def stack_and_center(
     """
     Stack vectors into matrix and optionally center.
     
+    Takes multiple 1D delta vectors (one per task) and stacks them into a
+    2D matrix suitable for SVD. Optionally subtracts the mean across tasks
+    to center the data, which often improves SVD decomposition.
+    
+    === WHY CENTER? ===
+    
+    Centering removes the "average task vector" from each task's delta,
+    making SVD focus on the differences between tasks rather than their
+    common direction. This often results in:
+    - More meaningful principal components
+    - Better separation of task-specific variations
+    - Improved reconstruction quality
+    
     Args:
-        vectors: List of 1D tensors (same length)
-        center: Whether to mean-center columns
+        vectors: List of 1D tensors (all same length D), one per task
+        center: Whether to mean-center columns (subtract mean across tasks)
         
     Returns:
-        Tuple of (stacked matrix [D x N], mean vector or None)
+        Tuple of:
+            - T: Stacked matrix [D x N] where N = number of tasks
+            - mean: Mean vector [D x 1] if centered, None otherwise
+            
+    Example:
+        >>> deltas = [torch.randn(100) for _ in range(4)]  # 4 tasks, 100 dims
+        >>> T, mean = stack_and_center(deltas, center=True)
+        >>> T.shape
+        torch.Size([100, 4])
     """
     if not vectors:
         raise ValueError("Empty vector list")
     
-    # Stack into matrix [D x N]
+    # Stack into matrix: each vector becomes a column
+    # Result shape: [D x N] where D = dimension, N = number of tasks
     T = torch.stack(vectors, dim=1)
     
+    # Optionally center by subtracting mean across columns (tasks)
     mean = None
     if center:
+        # Compute mean vector [D x 1]
         mean = T.mean(dim=1, keepdim=True)
+        # Subtract mean from each column
         T = T - mean
     
     return T, mean
@@ -38,19 +117,41 @@ def compute_energy_spectrum(singular_values: torch.Tensor) -> torch.Tensor:
     """
     Compute cumulative energy spectrum from singular values.
     
+    "Energy" in the SVD context refers to the squared singular values,
+    which represent the variance explained by each principal component.
+    
+    The cumulative energy at index k tells us what fraction of total
+    variance is captured by the first k+1 components.
+    
+    === FORMULA ===
+    
+    energy_i = σ_i²
+    cumulative_energy(k) = Σ(σ_1² + ... + σ_k²) / Σ(all σ_i²)
+    
     Args:
-        singular_values: 1D tensor of singular values (sorted descending)
+        singular_values: 1D tensor of singular values (sorted descending by convention)
         
     Returns:
-        Cumulative energy fractions
+        Tensor of cumulative energy fractions, same length as input
+        Values range from small (first component alone) to 1.0 (all components)
+        
+    Example:
+        >>> S = torch.tensor([10.0, 5.0, 2.0, 1.0])  # Singular values
+        >>> cum_energy = compute_energy_spectrum(S)
+        >>> # Energy: [100, 25, 4, 1] -> Total = 130
+        >>> # Cumulative: [100/130, 125/130, 129/130, 130/130]
+        >>> cum_energy[0]  # ~0.77 (first component captures 77%)
+        >>> cum_energy[-1]  # 1.0 (all components capture 100%)
     """
+    # Square singular values to get variance (energy)
     energy = singular_values ** 2
     total_energy = energy.sum()
     
+    # Handle degenerate case where all singular values are ~0
     if total_energy < 1e-10:
-        # Degenerate case
         return torch.ones_like(energy)
     
+    # Compute cumulative sum and normalize
     cum_energy = torch.cumsum(energy, dim=0)
     return cum_energy / total_energy
 
@@ -64,26 +165,49 @@ def select_rank(
     """
     Select rank based on cumulative energy threshold.
     
+    Finds the smallest rank k such that the cumulative energy (variance)
+    captured by the first k singular values meets or exceeds the threshold.
+    
+    === ALGORITHM ===
+    
+    1. Compute cumulative energy: E_k = (σ_1² + ... + σ_k²) / total
+    2. Find smallest k where E_k >= threshold
+    3. Apply min_rank and max_rank constraints
+    
+    === TRADEOFFS ===
+    
+    - Higher threshold (e.g., 0.99): More accuracy, less compression
+    - Lower threshold (e.g., 0.80): More compression, potential quality loss
+    - max_rank cap: Prevents excessive rank even for complex parameters
+    - min_rank: Ensures at least some representation even for simple data
+    
     Args:
         singular_values: 1D tensor of singular values
-        energy_threshold: Retain this fraction of energy
-        max_rank: Maximum rank cap (None for no cap)
-        min_rank: Minimum rank
+        energy_threshold: Target fraction of energy to retain (0.0-1.0)
+        max_rank: Maximum rank cap (None = no cap)
+        min_rank: Minimum rank (default: 1)
         
     Returns:
-        Selected rank k
+        Selected rank k (integer)
+        
+    Example:
+        >>> S = torch.tensor([10.0, 5.0, 2.0, 1.0])
+        >>> k = select_rank(S, energy_threshold=0.90)  # First 2 components
+        >>> k = select_rank(S, energy_threshold=0.95, max_rank=2)  # Capped at 2
     """
+    # Get cumulative energy spectrum
     cum_energy = compute_energy_spectrum(singular_values)
     
     # Find first index where cumulative energy >= threshold
+    # Count how many are BELOW threshold, then add 1
     k = int((cum_energy < energy_threshold).sum().item()) + 1
     
-    # Apply constraints
+    # Apply minimum and maximum rank constraints
     k = max(k, min_rank)
     if max_rank is not None:
         k = min(k, max_rank)
     
-    # Can't exceed number of singular values
+    # Can't exceed number of available singular values
     k = min(k, len(singular_values))
     
     return k
