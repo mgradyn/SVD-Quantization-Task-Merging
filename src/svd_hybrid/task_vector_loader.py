@@ -1,7 +1,52 @@
 """
 Task vector loading utilities extended from TVQ logic.
 Loads fine-tuned model checkpoints and computes task vectors (deltas from base model).
+
+=== TUTORIAL: Loading Task Vectors ===
+
+This module provides utilities for loading model checkpoints and computing
+task vectors (deltas) between fine-tuned and base models.
+
+=== CHECKPOINT FORMATS SUPPORTED ===
+
+1. **Direct state dict**: {param_name: tensor, ...}
+2. **Nested with "state_dict"**: {"state_dict": {...}, "epoch": 10, ...}
+3. **Nested with "model"**: {"model": {...}, "optimizer": {...}, ...}
+4. **Nested with "model_state_dict"**: {"model_state_dict": {...}, ...}
+
+All formats are automatically handled.
+
+=== TASK VECTOR COMPUTATION ===
+
+For each parameter in both base and fine-tuned models:
+    task_vector[param] = finetuned[param] - base[param]
+
+This represents what the model "learned" during fine-tuning.
+
+=== CHECKPOINT PATH CONVENTIONS ===
+
+The loader searches for checkpoints using these naming patterns:
+- {checkpoint_dir}/{task_name}.pt
+- {checkpoint_dir}/{task_name}.pth
+- {checkpoint_dir}/{task_name}/checkpoint.pt
+- {checkpoint_dir}/{task_name}/model.pt
+
+=== EXAMPLE ===
+
+    >>> from task_vector_loader import load_task_vectors, organize_by_parameter
+    >>> 
+    >>> # Define task checkpoints
+    >>> paths = {"Cars": "ckpts/cars.pt", "DTD": "ckpts/dtd.pt"}
+    >>> 
+    >>> # Load task vectors
+    >>> task_vectors = load_task_vectors("base.pt", paths)
+    >>> # {'Cars': {'layer1.weight': delta1, ...}, 'DTD': {...}}
+    >>> 
+    >>> # Reorganize by parameter (useful for SVD)
+    >>> by_param = organize_by_parameter(task_vectors)
+    >>> # {'layer1.weight': {'Cars': delta1, 'DTD': delta2}, ...}
 """
+
 import torch
 import os
 from typing import Dict, List, Tuple, Optional
@@ -12,20 +57,32 @@ def load_checkpoint(checkpoint_path: str, device: str = "cpu") -> Dict[str, torc
     """
     Load a model checkpoint.
     
+    Handles various checkpoint formats and automatically extracts the state dict.
+    
     Args:
         checkpoint_path: Path to checkpoint file
-        device: Device to load to
+        device: Device to load to ("cpu" recommended to avoid GPU memory issues)
         
     Returns:
-        State dictionary
+        State dictionary (parameter_name -> tensor)
+        
+    Raises:
+        FileNotFoundError: If checkpoint file doesn't exist
+        
+    Example:
+        >>> state_dict = load_checkpoint("./models/base.pt")
+        >>> state_dict.keys()
+        dict_keys(['layer1.weight', 'layer1.bias', ...])
     """
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
     
+    # Load checkpoint (map_location='cpu' prevents GPU memory issues)
     checkpoint = torch.load(checkpoint_path, map_location=device)
     
     # Handle different checkpoint formats
     if isinstance(checkpoint, dict):
+        # Check for nested state dict under various keys
         if "state_dict" in checkpoint:
             return checkpoint["state_dict"]
         elif "model" in checkpoint:
@@ -47,6 +104,9 @@ def compute_task_vector(
     """
     Compute task vector (delta) between fine-tuned and base model.
     
+    For each parameter that exists in both models with matching shapes,
+    computes: delta = finetuned - base
+    
     Args:
         base_state: Base model state dict
         finetuned_state: Fine-tuned model state dict
@@ -54,22 +114,29 @@ def compute_task_vector(
         
     Returns:
         Dictionary mapping parameter name -> delta tensor
+        
+    Example:
+        >>> delta = compute_task_vector(base_state, finetuned_state)
+        >>> # delta["layer1.weight"] = finetuned["layer1.weight"] - base["layer1.weight"]
     """
     task_vector = {}
     
     for key in base_state.keys():
+        # Skip if parameter not in fine-tuned model
         if key not in finetuned_state:
             continue
         
         base_param = base_state[key].to(device)
         finetuned_param = finetuned_state[key].to(device)
         
+        # Check shape compatibility
         if base_param.shape != finetuned_param.shape:
             print(f"Warning: Shape mismatch for {key}, skipping")
             continue
         
+        # Compute delta
         delta = finetuned_param - base_param
-        task_vector[key] = delta.detach()
+        task_vector[key] = delta.detach()  # Detach from computation graph
     
     return task_vector
 
