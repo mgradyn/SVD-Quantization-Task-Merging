@@ -589,10 +589,9 @@ elif OPEN_CLIP_AVAILABLE:
     VisualTransformer = VisionTransformer
 else:
     # If neither library is available, create a placeholder class
-    class VisualTransformer(nn.Module):
-        """Placeholder for VisualTransformer when CLIP libraries are not available."""
-        pass
-    
+    # VisionTransformer is the canonical name, VisualTransformer is an alias
     class VisionTransformer(nn.Module):
         """Placeholder for VisionTransformer when CLIP libraries are not available."""
         pass
+    
+    VisualTransformer = VisionTransformer
