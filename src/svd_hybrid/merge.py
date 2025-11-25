@@ -1,6 +1,58 @@
 """
 Merging logic with weighted averaging and reconstruction.
+
+=== TUTORIAL: The Merging Process ===
+
+This module implements the merging step of SVD-Hybrid, which combines
+compressed task representations into a single merged model.
+
+=== THE MERGING PROCESS ===
+
+1. **Dequantize**: Convert quantized low-energy coefficients back to floats
+2. **Weighted Average**: Combine coefficients across tasks with weights
+3. **Reconstruct**: Transform averaged coefficients back to parameter space
+4. **Apply Deltas**: Add merged deltas to base model
+
+=== WEIGHTED AVERAGING ===
+
+For each coefficient position:
+    c_avg = Σ (weight_i × c_i) for all tasks
+
+Where weights sum to 1 (e.g., uniform: 1/N, performance-based: softmax)
+
+=== RECONSTRUCTION FROM COEFFICIENTS ===
+
+Merged delta is reconstructed from averaged coefficients:
+    merged_delta = U_high × c_high_avg + U_low × c_low_avg
+
+This reverses the projection done during compression.
+
+=== FINAL MODEL ===
+
+The merged model is:
+    merged_model = base_model + merged_delta
+
+=== CLUSTER-BASED MERGING ===
+
+With cluster-based weighting, the process is hierarchical:
+1. Merge within clusters (similar tasks averaged)
+2. Merge cluster results (cluster centroids averaged)
+
+This can improve results when tasks naturally group together.
+
+=== EXAMPLE ===
+
+    >>> from merge import merge_all_parameters, apply_merged_deltas
+    >>> 
+    >>> # Merge all parameters
+    >>> merged_deltas = merge_all_parameters(
+    ...     compressed, bases, masks, weights, shapes, config
+    ... )
+    >>> 
+    >>> # Apply to base model
+    >>> merged_model = apply_merged_deltas(base_state_dict, merged_deltas)
 """
+
 import torch
 from typing import Dict, List, Optional, Tuple
 from .rtvq import RTVQQuantizer
@@ -16,19 +68,27 @@ def dequantize_and_average(
     """
     Dequantize low coefficients and compute weighted average of high and low.
     
+    This function:
+    1. Extracts coefficients from each task's compressed representation
+    2. Dequantizes the low-energy coefficients (RTVQ → float)
+    3. Computes weighted average across all tasks
+    
     Args:
         compressed_coeffs: Dictionary mapping task_name -> compression artifacts
-        weights: Dictionary mapping task_name -> weight
-        quantizer: RTVQ quantizer
-        region: "masked" or "unmasked"
+        weights: Dictionary mapping task_name -> weight (should sum to 1)
+        quantizer: RTVQ quantizer for dequantization
+        region: Which region to process - "masked" (signal) or "unmasked" (noise)
         device: Device for computation
         
     Returns:
-        Tuple of (averaged c_high, averaged c_low)
+        Tuple of:
+            - avg_c_high: Weighted average of high-energy coefficients [k]
+            - avg_c_low: Weighted average of low-energy coefficients [D-k]
+        Or (None, None) if no valid coefficients found
     """
     task_names = sorted(compressed_coeffs.keys())
     
-    # Extract and dequantize coefficients
+    # Collect coefficients from each task
     c_high_list = []
     c_low_list = []
     weight_list = []
@@ -36,41 +96,45 @@ def dequantize_and_average(
     for task_name in task_names:
         artifact = compressed_coeffs[task_name]
         
+        # Skip if this task has no data for this region
         if artifact is None or artifact.get(region) is None:
             continue
         
         region_artifact = artifact[region]
         
-        # Get high coefficients
+        # Get high-energy coefficients (already FP16, convert to FP32)
         c_high = region_artifact["c_high_fp16"].to(device).float()
         c_high_list.append(c_high)
         
-        # Dequantize low coefficients
+        # Dequantize low-energy coefficients
         c_low_quant = region_artifact["c_low_quant"]
         c_low = quantizer.dequantize(c_low_quant, device=device).float()
         c_low_list.append(c_low)
         
-        # Get weight
+        # Get this task's weight
         weight = weights.get(task_name, 1.0 / len(task_names))
         weight_list.append(weight)
     
+    # Handle empty case
     if not c_high_list:
         return None, None
     
-    # Normalize weights
+    # Normalize weights to sum to 1 (in case only subset of tasks are present)
     total_weight = sum(weight_list)
     weight_list = [w / total_weight for w in weight_list]
     
     # Compute weighted averages
     weight_tensor = torch.tensor(weight_list, device=device, dtype=torch.float32)
     
-    # Stack and weight
-    c_high_stacked = torch.stack(c_high_list, dim=0)  # [N x k]
-    c_low_stacked = torch.stack(c_low_list, dim=0)    # [N x (D-k)]
+    # Stack coefficients: [N x k] and [N x (D-k)]
+    c_high_stacked = torch.stack(c_high_list, dim=0)
+    c_low_stacked = torch.stack(c_low_list, dim=0)
     
-    weight_tensor_high = weight_tensor.view(-1, 1)  # [N x 1]
-    weight_tensor_low = weight_tensor.view(-1, 1)   # [N x 1]
+    # Reshape weights for broadcasting: [N x 1]
+    weight_tensor_high = weight_tensor.view(-1, 1)
+    weight_tensor_low = weight_tensor.view(-1, 1)
     
+    # Weighted sum along task dimension
     avg_c_high = (c_high_stacked * weight_tensor_high).sum(dim=0)
     avg_c_low = (c_low_stacked * weight_tensor_low).sum(dim=0)
     
@@ -87,21 +151,33 @@ def reconstruct_from_coefficients(
     """
     Reconstruct delta from averaged coefficients.
     
+    This is the inverse of the projection step. Transforms coefficients
+    back to parameter space.
+    
+    === FORMULA ===
+    
+    delta = U_high × c_high + U_low × c_low
+         = [D × k] × [k] + [D × (D-k)] × [D-k]
+         = [D] + [D]
+         = [D]
+    
     Args:
         avg_c_high: Averaged high coefficients [k]
         avg_c_low: Averaged low coefficients [D-k]
-        U_high: High-energy basis [D x k]
-        U_low: Low-energy basis [D x (D-k)]
+        U_high: High-energy basis [D × k]
+        U_low: Low-energy basis [D × (D-k)]
         device: Device for computation
         
     Returns:
         Reconstructed delta vector [D]
     """
+    # Convert to float32 for computation
     U_high_f = U_high.to(device).float()
     U_low_f = U_low.to(device).float()
     
-    part_high = U_high_f @ avg_c_high
-    part_low = U_low_f @ avg_c_low
+    # Reconstruct: delta = U × c
+    part_high = U_high_f @ avg_c_high  # [D]
+    part_low = U_low_f @ avg_c_low      # [D]
     
     return part_high + part_low
 
@@ -268,22 +344,37 @@ def apply_merged_deltas(
     """
     Apply merged deltas to base model to create merged model.
     
+    The final step of model merging - adds the merged task vector to the
+    base model to produce the multi-task merged model.
+    
+    === FORMULA ===
+    
+    merged_model[param] = base_model[param] + merged_delta[param]
+    
+    Parameters not in merged_deltas are copied unchanged from base model.
+    
     Args:
         base_state_dict: Base model state dict
-        merged_deltas: Merged delta vectors
+        merged_deltas: Merged delta vectors from merge_all_parameters
         device: Device for computation
         
     Returns:
-        Merged model state dict
+        Merged model state dict ready to load into a model
+        
+    Example:
+        >>> merged_state = apply_merged_deltas(base_state, merged_deltas)
+        >>> model.load_state_dict(merged_state)
     """
     merged_state_dict = {}
     
     for param_name, base_param in base_state_dict.items():
         if param_name in merged_deltas:
+            # Apply delta: merged = base + delta
             delta = merged_deltas[param_name].to(base_param.device)
             merged_param = base_param + delta
             merged_state_dict[param_name] = merged_param
         else:
+            # Keep base value unchanged
             merged_state_dict[param_name] = base_param.clone()
     
     return merged_state_dict
