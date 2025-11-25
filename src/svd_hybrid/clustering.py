@@ -1,6 +1,50 @@
 """
 Task clustering utilities for multi-basis merging.
+
+=== TUTORIAL: Why Cluster Tasks? ===
+
+When merging many task vectors, some tasks may be more similar to each other
+than others. For example:
+
+- Image classification tasks (Cars, DTD) might be similar
+- Digit/character recognition (MNIST, SVHN) might be similar
+- Scene understanding (SUN397, EuroSAT) might be similar
+
+By grouping similar tasks into clusters, we can:
+
+1. **Improve merging quality**: Similar tasks can share more structure
+2. **Reduce interference**: Different task types don't interfere as much
+3. **Better weighting**: Equal weight within groups, variable across groups
+
+=== CLUSTERING METHODS ===
+
+1. **K-Means**: Fast, partitions into k spherical clusters
+   - Good for quick clustering
+   - Requires specifying k upfront
+   
+2. **Hierarchical (Ward's method)**: Builds tree of clusters
+   - Better for understanding task relationships
+   - Can cut tree at different levels
+
+=== HOW IT WORKS ===
+
+1. Flatten each task's vector into a single feature vector
+2. Normalize vectors (optional, improves clustering)
+3. Apply clustering algorithm (k-means or hierarchical)
+4. Return cluster assignments for each task
+
+=== EXAMPLE ===
+
+    >>> from clustering import cluster_tasks, get_cluster_members
+    >>> 
+    >>> # Assume task_vectors is already loaded
+    >>> assignments = cluster_tasks(task_vectors, k=3, method="kmeans")
+    >>> # {'Cars': 0, 'DTD': 0, 'EuroSAT': 1, 'SUN397': 1, 'MNIST': 2, 'SVHN': 2}
+    >>> 
+    >>> clusters = get_cluster_members(assignments)
+    >>> # {0: ['Cars', 'DTD'], 1: ['EuroSAT', 'SUN397'], 2: ['MNIST', 'SVHN']}
 """
+
 import torch
 import numpy as np
 from typing import Dict, List, Tuple
@@ -14,21 +58,41 @@ def flatten_task_vectors(
     """
     Flatten all task vectors into a matrix for clustering.
     
+    Each task vector is a dictionary of parameter tensors. This function
+    concatenates all parameters into a single feature vector per task,
+    creating a matrix suitable for clustering algorithms.
+    
+    === OUTPUT FORMAT ===
+    
+    Feature matrix: [N x D] where:
+    - N = number of tasks
+    - D = total flattened parameters (sum of all parameter sizes)
+    
     Args:
         task_vectors: Dictionary mapping task_name -> parameter_name -> delta tensor
         
     Returns:
-        Tuple of (feature matrix [N x D], task names in order)
+        Tuple of:
+            - Feature matrix as numpy array [N x D]
+            - List of task names in the same order as matrix rows
+            
+    Example:
+        >>> features, task_names = flatten_task_vectors(task_vectors)
+        >>> features.shape
+        (8, 1000000)  # 8 tasks, 1M total parameters
+        >>> task_names
+        ['Cars', 'DTD', 'EuroSAT', ...]
     """
+    # Sort task names for consistent ordering
     task_names = sorted(task_vectors.keys())
     
-    # Get all parameter names
+    # Get all parameter names across all tasks
     all_params = set()
     for task_vector in task_vectors.values():
         all_params.update(task_vector.keys())
     param_names = sorted(all_params)
     
-    # Flatten each task vector
+    # Flatten each task vector into a single row
     flattened_list = []
     for task_name in task_names:
         task_vector = task_vectors[task_name]
@@ -37,17 +101,20 @@ def flatten_task_vectors(
         param_tensors = []
         for param_name in param_names:
             if param_name in task_vector:
+                # Flatten this parameter tensor
                 param_tensors.append(task_vector[param_name].flatten())
             else:
                 # Task doesn't have this parameter, use zeros
-                # Assume shape from another task
+                # Find the shape from another task that has it
                 ref_task = next(t for t in task_vectors.values() if param_name in t)
                 zeros = torch.zeros_like(ref_task[param_name]).flatten()
                 param_tensors.append(zeros)
         
+        # Concatenate all parameter tensors into one long vector
         flattened = torch.cat(param_tensors, dim=0)
         flattened_list.append(flattened.cpu().numpy())
     
+    # Stack into matrix [N x D]
     feature_matrix = np.stack(flattened_list, axis=0)
     
     return feature_matrix, task_names
@@ -61,17 +128,28 @@ def compute_kmeans_clustering(
     """
     Compute k-means clustering.
     
+    Partitions the feature vectors into k clusters using the k-means algorithm.
+    K-means minimizes the within-cluster sum of squares (variance).
+    
     Args:
-        features: Feature matrix [N x D]
-        k: Number of clusters
-        random_state: Random seed
+        features: Feature matrix [N x D] where N=samples, D=dimensions
+        k: Number of clusters to create
+        random_state: Random seed for reproducibility
         
     Returns:
-        Cluster assignments [N]
+        Cluster assignments as numpy array [N], values in [0, k-1]
+        
+    Example:
+        >>> features = np.random.randn(8, 1000)  # 8 tasks, 1000 features
+        >>> labels = compute_kmeans_clustering(features, k=3)
+        >>> labels
+        array([0, 0, 1, 1, 2, 2, 0, 1])
     """
     if k <= 0 or k > features.shape[0]:
         raise ValueError(f"Invalid k={k} for {features.shape[0]} samples")
     
+    # Create and fit k-means model
+    # n_init=10 means 10 random initializations, take best
     kmeans = KMeans(n_clusters=k, random_state=random_state, n_init=10)
     labels = kmeans.fit_predict(features)
     
@@ -86,22 +164,33 @@ def compute_hierarchical_clustering(
     """
     Compute hierarchical clustering.
     
+    Builds a tree (dendrogram) of clusters and cuts it to get k clusters.
+    Ward's method minimizes within-cluster variance (similar to k-means objective).
+    
+    === LINKAGE METHODS ===
+    
+    - "ward": Minimize variance (recommended)
+    - "complete": Maximum distance between clusters
+    - "average": Average distance between clusters
+    - "single": Minimum distance between clusters
+    
     Args:
         features: Feature matrix [N x D]
         k: Number of clusters
-        method: Linkage method (ward, complete, average, single)
+        method: Linkage method for hierarchical clustering
         
     Returns:
-        Cluster assignments [N]
+        Cluster assignments as numpy array [N], values in [0, k-1]
     """
     if k <= 0 or k > features.shape[0]:
         raise ValueError(f"Invalid k={k} for {features.shape[0]} samples")
     
-    # Compute linkage
+    # Compute linkage matrix (hierarchical structure)
     Z = linkage(features, method=method)
     
     # Cut dendrogram to get k clusters
-    labels = fcluster(Z, k, criterion='maxclust') - 1  # Make 0-indexed
+    # fcluster returns 1-indexed labels, so subtract 1 for 0-indexed
+    labels = fcluster(Z, k, criterion='maxclust') - 1
     
     return labels
 
@@ -114,21 +203,35 @@ def cluster_tasks(
     """
     Cluster tasks based on their task vectors.
     
+    Main entry point for task clustering. Flattens task vectors into feature
+    vectors, applies clustering, and returns assignments.
+    
+    === PREPROCESSING ===
+    
+    Task vectors are L2-normalized before clustering, which helps when
+    tasks have different magnitudes but similar directions.
+    
     Args:
         task_vectors: Dictionary mapping task_name -> parameter_name -> delta tensor
-        k: Number of clusters
-        method: Clustering method ("kmeans" or "hierarchical")
+        k: Number of clusters to create
+        method: Clustering method - "kmeans" or "hierarchical"
         
     Returns:
-        Dictionary mapping task_name -> cluster_id
+        Dictionary mapping task_name -> cluster_id (0 to k-1)
+        
+    Example:
+        >>> assignments = cluster_tasks(task_vectors, k=3, method="kmeans")
+        >>> assignments
+        {'Cars': 0, 'DTD': 0, 'EuroSAT': 1, 'SUN397': 1, 'MNIST': 2}
     """
-    # Flatten task vectors
+    # Flatten task vectors into feature matrix
     features, task_names = flatten_task_vectors(task_vectors)
     
-    # Normalize features (optional but often helpful)
+    # Normalize features (L2 normalization per task)
+    # This makes clustering focus on direction rather than magnitude
     features = features / (np.linalg.norm(features, axis=1, keepdims=True) + 1e-8)
     
-    # Cluster
+    # Apply clustering algorithm
     if method == "kmeans":
         labels = compute_kmeans_clustering(features, k)
     elif method == "hierarchical":
@@ -148,11 +251,20 @@ def get_cluster_members(
     """
     Get list of tasks in each cluster.
     
+    Inverts the cluster assignment dictionary to get members per cluster.
+    Useful for understanding cluster composition.
+    
     Args:
         cluster_assignments: Dictionary mapping task_name -> cluster_id
         
     Returns:
-        Dictionary mapping cluster_id -> list of task names
+        Dictionary mapping cluster_id -> list of task names in that cluster
+        
+    Example:
+        >>> assignments = {'Cars': 0, 'DTD': 0, 'EuroSAT': 1}
+        >>> members = get_cluster_members(assignments)
+        >>> members
+        {0: ['Cars', 'DTD'], 1: ['EuroSAT']}
     """
     clusters = {}
     for task_name, cluster_id in cluster_assignments.items():

@@ -1,6 +1,57 @@
 """
 Command-line interface for SVD-Hybrid merging.
+
+=== TUTORIAL: Using the CLI ===
+
+This module provides the command-line interface for running SVD-Hybrid merging.
+It supports configuration via command-line arguments and JSON config files.
+
+=== BASIC USAGE ===
+
+    python -m src.svd_hybrid.cli \\
+        --tasks Cars DTD EuroSAT SUN397 \\
+        --checkpoint-dir ./checkpoints \\
+        --base-model-path ./base_model.pt \\
+        --output-dir ./output
+
+=== CONFIGURATION OPTIONS ===
+
+The CLI accepts three types of configuration:
+
+1. **Command-line arguments**: Direct control
+   --energy-threshold 0.95
+   --max-rank 64
+   --weighting performance
+
+2. **Main config file** (--config): JSON with all settings
+   {"tasks": [...], "svd_energy_threshold": 0.95}
+
+3. **Specialized configs**:
+   --quantize-config: Quantization settings
+   --load-config: Loading settings (for quantized inputs)
+
+=== PIPELINE STEPS ===
+
+The CLI runs through 9 steps:
+1. Load task vectors from checkpoints
+2. Load and combine masks (if provided)
+3. Extract parameter information
+4. Construct SVD bases
+5. Compress task vectors
+6. Compute task weights
+7. Merge parameters
+8. Create merged model
+9. Compute diagnostics
+
+=== OUTPUT FILES ===
+
+After running, you'll find:
+- output_dir/merged_state_dict.pt: The merged model
+- output_dir/weights.json: Task weights used
+- output_dir/clusters.json: Cluster assignments (if clustering)
+- artifact_dir/: Bases, coefficients, diagnostics (if --store-artifacts)
 """
+
 import argparse
 import torch
 import os
@@ -22,11 +73,37 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
     """
     Run the complete SVD-Hybrid merging pipeline.
     
+    This is the main entry point for programmatic use. It executes all
+    9 steps of the SVD-Hybrid method:
+    
+    1. Load task vectors from checkpoints
+    2. Load and combine masks
+    3. Extract parameter information
+    4. Construct SVD bases for each parameter
+    5. Compress task vectors (project + quantize)
+    6. Compute task weights
+    7. Merge parameters (dequantize + average + reconstruct)
+    8. Create merged model (base + deltas)
+    9. Compute diagnostics and save results
+    
     Args:
-        config: SVDHybridConfig object
+        config: SVDHybridConfig object with all parameters
         
     Returns:
-        Dictionary containing merged model and diagnostics
+        Dictionary containing:
+            - merged_state_dict: The merged model state dict
+            - diagnostics: Reconstruction errors and metrics
+            - bases: SVD bases for all parameters
+            - compressed: Compressed coefficients for all tasks
+            
+    Example:
+        >>> config = SVDHybridConfig(
+        ...     tasks=["Cars", "DTD"],
+        ...     checkpoint_dir="./ckpts",
+        ...     base_model_path="./base.pt"
+        ... )
+        >>> results = run_svd_hybrid_pipeline(config)
+        >>> model.load_state_dict(results["merged_state_dict"])
     """
     device = config.device if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")

@@ -4,7 +4,23 @@ Advanced model merging techniques combining SVD-based compression with task vect
 
 ## Overview
 
-This repository implements multiple merging methods for multi-task models:
+This repository implements multiple merging methods for multi-task models. It provides tools for:
+
+1. **Task Vector Quantization (TVQ)**: Compress task vectors (model deltas) for efficient storage
+2. **SVD-Hybrid Merging**: Advanced merging combining SVD decomposition with quantization
+3. **Multi-Task Model Merging**: Combine multiple fine-tuned models into a single model
+
+### What are Task Vectors?
+
+A task vector represents the difference between a fine-tuned model and its base model:
+```
+task_vector = finetuned_model_weights - base_model_weights
+```
+
+By storing and manipulating task vectors instead of full model weights, we can:
+- Efficiently combine multiple fine-tuned models
+- Reduce storage requirements through quantization
+- Enable flexible model merging strategies
 
 ### SVD-Hybrid (Tall Mask + TVQ)
 
@@ -27,9 +43,14 @@ Key features:
 ### Installation
 
 ```bash
+# Required dependencies
 pip install torch numpy scikit-learn scipy
-# Optional for Hydra support
+
+# Optional: Hydra configuration framework support
 pip install hydra-core
+
+# Optional: For development and testing
+pip install pytest
 ```
 
 ### Running SVD-Hybrid
@@ -49,37 +70,90 @@ See [docs/svd_hybrid.md](docs/svd_hybrid.md) for detailed documentation.
 
 ```
 .
-├── src/
-│   ├── svd_hybrid/           # Advanced SVD-Hybrid implementation
-│   │   ├── config.py         # Configuration dataclass
-│   │   ├── mask_loader.py    # Tall Masks loading
-│   │   ├── task_vector_loader.py  # Task vector extraction
-│   │   ├── basis.py          # SVD basis construction
-│   │   ├── rtvq.py           # Residual quantization
-│   │   ├── weighting.py      # Task weighting strategies
-│   │   ├── clustering.py     # Task clustering
-│   │   ├── compress.py       # Compression pipeline
-│   │   ├── merge.py          # Merging logic
-│   │   ├── storage.py        # Artifact storage/loading
-│   │   ├── diagnostics.py    # Metrics and analysis
-│   │   ├── cli.py            # Command-line interface
-│   │   └── hydra_entry.py    # Hydra integration
-│   └── main.py               # Main dispatcher
-├── scripts/
-│   └── run_svd_hybrid.py     # Convenience runner
-├── config/
-│   ├── config.yaml           # Main configuration
+├── src/                          # Main source code
+│   ├── __init__.py              # Source package init
+│   ├── main.py                  # Main entry point / method dispatcher
+│   └── svd_hybrid/              # SVD-Hybrid implementation
+│       ├── __init__.py          # Package exports
+│       ├── config.py            # Configuration dataclass
+│       ├── mask_loader.py       # Tall Masks loading and combination
+│       ├── task_vector_loader.py # Task vector extraction from checkpoints
+│       ├── basis.py             # SVD basis construction with energy-based rank selection
+│       ├── rtvq.py              # Residual Task Vector Quantization
+│       ├── weighting.py         # Task weighting strategies (uniform, performance, cluster)
+│       ├── clustering.py        # Task clustering for grouped merging
+│       ├── compress.py          # Compression pipeline (project + quantize)
+│       ├── merge.py             # Merging logic with weighted averaging
+│       ├── storage.py           # Artifact storage and loading
+│       ├── diagnostics.py       # Metrics, error analysis, and reporting
+│       ├── cli.py               # Command-line interface
+│       ├── hydra_entry.py       # Hydra configuration framework integration
+│       ├── reload.py            # Reload merged models from artifacts
+│       └── run.py               # High-level pipeline orchestrator
+│
+├── scripts/                      # Convenience scripts
+│   ├── run_svd_hybrid.py        # Run SVD-Hybrid from command line
+│   └── reload_svd_hybrid.py     # Reload and verify merged models
+│
+├── config/                       # Hydra YAML configuration files
+│   │                            # (Used with hydra_entry.py for declarative config)
+│   ├── config.yaml              # Main Hydra config with defaults
 │   └── method/
-│       └── svd_hybrid.yaml   # SVD-Hybrid parameters
-├── tests/
-│   ├── test_rank_selection.py  # Rank selection tests
-│   └── test_rtvq.py          # Quantization tests
-├── docs/
-│   └── svd_hybrid.md         # Detailed documentation
-├── quantization_utils.py     # Core TVQ quantization functions
-├── task_vectors.py           # Task vector classes
-├── dataset_constants.py      # Standard task definitions
-└── load_and_merge.py         # Artifact reconstruction
+│       └── svd_hybrid.yaml      # SVD-Hybrid specific parameters
+│
+├── configs/                      # JSON configuration files
+│   │                            # (Used with CLI --config options)
+│   ├── load_config.json         # Config for loading quantized task vectors
+│   └── quantize_config.json     # Config for quantizing task vectors
+│
+├── examples/                     # Usage examples
+│   └── example_usage.py         # Programmatic usage examples
+│
+├── tests/                        # Test suite
+│   ├── __init__.py
+│   ├── test_quantization_utils.py  # Quantization function tests
+│   ├── test_task_vectors.py     # Task vector class tests
+│   ├── test_rank_selection.py   # SVD rank selection tests
+│   ├── test_rtvq.py             # RTVQ quantization tests
+│   ├── test_mask_strategies.py  # Mask combination tests
+│   └── test_integration.py      # End-to-end integration tests
+│
+├── docs/                         # Documentation
+│   └── svd_hybrid.md            # Detailed SVD-Hybrid documentation
+│
+├── quantization_utils.py        # Core quantization functions (absmax, asymmetric)
+├── task_vectors.py              # Task vector classes (TaskVector, QuantizedTaskVector, etc.)
+├── dataset_constants.py         # Standard 8-task evaluation definitions
+├── load_and_merge.py            # Root-level artifact reconstruction script
+│
+├── __init__.py                  # Root package init (legacy compatibility)
+├── README.md                    # This file
+├── CHANGELOG.md                 # Version history and changes
+└── IMPLEMENTATION_SUMMARY.md    # Technical implementation details
+```
+
+### Configuration Directories Explained
+
+This repository has **two configuration directories** serving different purposes:
+
+#### `config/` - Hydra YAML Configurations
+Used with the [Hydra](https://hydra.cc/) configuration framework for declarative, composable configs:
+- `config.yaml`: Main configuration with defaults and method selection
+- `method/svd_hybrid.yaml`: Method-specific parameters
+
+Use with:
+```bash
+python src/svd_hybrid/hydra_entry.py --config-name config
+```
+
+#### `configs/` - JSON Configuration Files
+Used with command-line `--config` options for JSON-based configuration:
+- `load_config.json`: Settings for loading pre-quantized task vectors
+- `quantize_config.json`: Settings for quantizing task vectors
+
+Use with:
+```bash
+python src/main.py --method svd_hybrid --load-config configs/load_config.json
 ```
 
 ## Features

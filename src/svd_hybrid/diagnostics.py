@@ -1,6 +1,65 @@
 """
 Diagnostics: reconstruction error, energy metrics, compression ratios.
+
+=== TUTORIAL: Understanding SVD-Hybrid Diagnostics ===
+
+This module provides tools to analyze the quality of SVD-Hybrid compression
+and merging. Good diagnostics help you:
+
+1. **Tune parameters**: Find the right energy threshold and rank cap
+2. **Verify quality**: Ensure reconstruction error is acceptable
+3. **Measure compression**: Understand storage savings
+4. **Debug issues**: Identify problematic parameters or tasks
+
+=== KEY METRICS ===
+
+1. **Reconstruction Error**: How well can we recover the original deltas?
+   - absolute_error: ||original - reconstructed||
+   - relative_error: ||error|| / ||original||
+   - Target: <5% relative error is usually good
+
+2. **Energy Retained**: What fraction of variance is captured?
+   - 0.95 = 95% of variance in first k components
+   - Higher is better but requires more storage
+
+3. **Compression Ratio**: How much smaller is the compressed form?
+   - original_size / compressed_size
+   - Typical: 8-16x for 4-bit RTVQ
+
+4. **Per-Parameter Statistics**: Which parameters compress well?
+   - Some parameters naturally have low rank
+   - Others need more components
+
+=== DIAGNOSTIC OUTPUT ===
+
+    {
+        "summary": {
+            "num_parameters": 50,
+            "average_rank": 12.5,
+            "average_energy_retained": 0.97,
+            "average_reconstruction_error": 0.02,
+            "average_compression_ratio": 10.5
+        },
+        "per_parameter": {
+            "layer1.weight": {
+                "k": 8,
+                "energy_retained": 0.98,
+                "mean_relative_error": 0.015
+            },
+            ...
+        }
+    }
+
+=== EXAMPLE ===
+
+    >>> from diagnostics import compute_all_diagnostics, print_diagnostics_summary
+    >>> 
+    >>> diagnostics = compute_all_diagnostics(
+    ...     task_vectors, compressed, bases, masks, config
+    ... )
+    >>> print_diagnostics_summary(diagnostics)
 """
+
 import torch
 import numpy as np
 from typing import Dict, List, Optional, Tuple
@@ -14,18 +73,35 @@ def compute_reconstruction_error(
     """
     Compute reconstruction error metrics.
     
+    Measures how well the compressed representation reconstructs the original.
+    
+    === ERROR METRICS ===
+    
+    - **absolute_error**: ||original - reconstructed||₂ (L2 norm of error)
+    - **relative_error**: ||error||₂ / ||original||₂ (percentage of magnitude)
+    - **max_absolute_error**: max(|error|) (worst element-wise error)
+    - **mean_absolute_error**: mean(|error|) (average element-wise error)
+    
     Args:
         original_delta: Original delta vector
         reconstructed_delta: Reconstructed delta vector
         
     Returns:
         Dictionary of error metrics
+        
+    Example:
+        >>> metrics = compute_reconstruction_error(original, reconstructed)
+        >>> if metrics["relative_error"] > 0.1:
+        ...     print("Warning: >10% reconstruction error")
     """
+    # Compute error vector
     error = original_delta - reconstructed_delta
     
+    # Compute norms
     original_norm = original_delta.norm().item()
     error_norm = error.norm().item()
     
+    # Relative error (avoid division by zero)
     relative_error = error_norm / original_norm if original_norm > 1e-10 else 0
     
     return {
@@ -307,8 +383,24 @@ def print_diagnostics_summary(diagnostics: Dict):
     """
     Print human-readable summary of diagnostics.
     
+    Formats and prints the key metrics from a diagnostics dictionary
+    for quick assessment of compression quality.
+    
     Args:
-        diagnostics: Diagnostics dictionary
+        diagnostics: Diagnostics dictionary from compute_all_diagnostics
+        
+    Example output:
+        ============================================================
+        SVD-Hybrid Diagnostics Summary
+        ============================================================
+        
+        Number of parameters: 50
+        Average rank: 12.50 ± 5.20
+        Average energy retained: 0.9650
+        Average reconstruction error: 0.0234
+        Average compression ratio: 10.50x
+        
+        ============================================================
     """
     print("\n" + "="*60)
     print("SVD-Hybrid Diagnostics Summary")

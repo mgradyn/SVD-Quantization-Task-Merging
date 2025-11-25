@@ -1,6 +1,56 @@
 """
 Hydra entry point for SVD-Hybrid merging (Tall Masks style).
+
+=== TUTORIAL: Using Hydra Configuration ===
+
+This module provides integration with the Hydra configuration framework,
+allowing declarative YAML-based configuration of SVD-Hybrid.
+
+=== WHAT IS HYDRA? ===
+
+Hydra (https://hydra.cc/) is a framework for elegantly configuring complex
+applications. It allows you to:
+
+- Define configurations in YAML files
+- Override settings from command line
+- Compose configurations from multiple files
+- Automatically log configurations
+
+=== CONFIGURATION FILES ===
+
+The configuration lives in:
+    config/
+    ├── config.yaml           # Main config
+    └── method/
+        └── svd_hybrid.yaml   # SVD-Hybrid parameters
+
+=== USAGE ===
+
+    # Run with default configuration
+    python -m src.svd_hybrid.hydra_entry
+    
+    # Override parameters
+    python -m src.svd_hybrid.hydra_entry method.svd_energy_threshold=0.99
+    
+    # Use different config
+    python -m src.svd_hybrid.hydra_entry --config-name my_config
+
+=== YAML CONFIGURATION FORMAT ===
+
+    # config.yaml
+    tasks:
+      - Cars
+      - DTD
+      - EuroSAT
+    checkpoint_dir: ./checkpoints
+    base_model_path: ./base.pt
+    
+    method:
+      svd_energy_threshold: 0.95
+      svd_max_rank: 64
+      svd_low_bits: 4
 """
+
 try:
     import hydra
     from omegaconf import DictConfig

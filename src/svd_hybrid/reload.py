@@ -1,9 +1,53 @@
 """
 Reload and reconstruct merged model from stored artifacts.
 
-This module provides functionality to reconstruct a merged model solely from
-saved artifacts without requiring access to the original task checkpoints.
+=== TUTORIAL: Reloading from Artifacts ===
+
+After running SVD-Hybrid with --store-artifacts, you can reconstruct the
+merged model later without needing the original fine-tuned checkpoints.
+
+=== WHY RELOAD? ===
+
+1. **Deployment**: Share artifacts instead of full checkpoints
+2. **Storage**: Artifacts are much smaller than full models
+3. **Reproducibility**: Exact reconstruction from saved data
+4. **Verification**: Check that reconstruction matches original
+
+=== WHAT'S IN ARTIFACTS? ===
+
+    artifacts/
+    ├── basis/          # SVD bases (U_high, U_low) per parameter
+    ├── coeffs/         # Quantized coefficients per task
+    ├── config.json     # Configuration used
+    └── diagnostics.json # Metrics and statistics
+
+=== HOW TO RELOAD ===
+
+    # From command line
+    python -m src.svd_hybrid.reload \\
+        --artifact-dir ./artifacts \\
+        --base-model-path ./base.pt \\
+        --output-path ./reloaded.pt
+
+    # From Python
+    from src.svd_hybrid.reload import reconstruct_from_artifacts
+    
+    result = reconstruct_from_artifacts(
+        artifact_dir="./artifacts",
+        base_model_path="./base.pt",
+        output_path="./reloaded.pt"
+    )
+
+=== VERIFICATION ===
+
+To verify reconstruction matches the original:
+
+    python scripts/reload_svd_hybrid.py \\
+        --artifact-dir ./artifacts \\
+        --verify \\
+        --merged-model-path ./original_merged.pt
 """
+
 import argparse
 import torch
 from typing import Dict, Optional
