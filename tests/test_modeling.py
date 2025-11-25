@@ -139,6 +139,12 @@ def test_aliases_exist():
     # VisualTransformer alias should exist for checkpoint loading compatibility
     assert hasattr(modeling, 'VisualTransformer')
     
+    # VisionTransformer should also be available
+    assert hasattr(modeling, 'VisionTransformer')
+    
+    # VisualTransformer should be an alias for VisionTransformer
+    assert modeling.VisualTransformer is modeling.VisionTransformer
+    
     # New classes should exist
     assert hasattr(modeling, 'ImageClassifier_debug')
     assert hasattr(modeling, 'MultiHeadImageClassifier')
@@ -220,6 +226,31 @@ def test_classification_head_normalize():
     
     # Outputs should be the same if normalization is applied
     assert torch.allclose(output1, output2, atol=1e-5)
+
+
+def test_clip_library_availability():
+    """Test that CLIP library availability flags are correctly set."""
+    from src import modeling
+    
+    # At least one of the CLIP libraries should be available
+    assert modeling.CLIP_AVAILABLE or modeling.OPEN_CLIP_AVAILABLE, \
+        "At least one CLIP library should be available"
+
+
+def test_vision_transformer_from_clip():
+    """Test that VisionTransformer comes from original CLIP when available."""
+    from src import modeling
+    import inspect
+    
+    # If original CLIP is available, VisionTransformer should come from it
+    if modeling.CLIP_AVAILABLE:
+        source_file = inspect.getfile(modeling.VisionTransformer)
+        # Check that it's from clip, not open_clip
+        assert 'clip/model.py' in source_file or 'clip\\model.py' in source_file, \
+            f"VisionTransformer should come from clip library when available, got: {source_file}"
+        # Make sure it's not from open_clip
+        assert 'open_clip' not in source_file, \
+            f"VisionTransformer should NOT come from open_clip when original clip is available"
 
 
 if __name__ == "__main__":

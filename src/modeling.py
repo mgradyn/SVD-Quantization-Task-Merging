@@ -45,7 +45,18 @@ import torch
 import torch.nn as nn
 from typing import Optional, Dict, Any, Set, List
 
-# Try to import open_clip, but don't fail if not available
+# Try to import CLIP libraries for checkpoint compatibility
+# Priority: Original OpenAI CLIP first, then open_clip as fallback
+# This is important because checkpoints created with OpenAI CLIP cannot be
+# loaded with open_clip due to different internal class names and structures.
+
+try:
+    import clip
+    import clip.model
+    CLIP_AVAILABLE = True
+except ImportError:
+    CLIP_AVAILABLE = False
+
 try:
     import open_clip
     OPEN_CLIP_AVAILABLE = True
@@ -560,15 +571,28 @@ VisionClassifier = ImageClassifier
 # Some older checkpoints were saved with different class names.
 # These aliases allow loading such checkpoints without modification.
 #
-# VisualTransformer: Older open_clip versions used this name for the vision encoder.
+# VisualTransformer: Older checkpoints used this name for the vision encoder.
 #                    Newer versions use VisionTransformer.
+#
+# IMPORTANT: Checkpoints created with OpenAI CLIP must be loaded using the
+# original clip library, not open_clip. The two libraries have different
+# internal class structures and cannot deserialize each other's objects.
 
-if OPEN_CLIP_AVAILABLE:
-    # Import VisionTransformer from open_clip and create alias for older checkpoints
+if CLIP_AVAILABLE:
+    # Prefer original OpenAI CLIP library for loading checkpoints
+    # This ensures checkpoints created with OpenAI CLIP can be loaded correctly
+    from clip.model import VisionTransformer
+    VisualTransformer = VisionTransformer
+elif OPEN_CLIP_AVAILABLE:
+    # Fall back to open_clip if original clip is not available
     from open_clip.model import VisionTransformer
     VisualTransformer = VisionTransformer
 else:
-    # If open_clip is not available, create a placeholder class
+    # If neither library is available, create a placeholder class
     class VisualTransformer(nn.Module):
-        """Placeholder for VisualTransformer when open_clip is not available."""
+        """Placeholder for VisualTransformer when CLIP libraries are not available."""
+        pass
+    
+    class VisionTransformer(nn.Module):
+        """Placeholder for VisionTransformer when CLIP libraries are not available."""
         pass
