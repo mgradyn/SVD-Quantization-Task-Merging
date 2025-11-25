@@ -36,7 +36,37 @@ If you need to explicitly import for custom unpickling:
 
 import torch
 import torch.nn as nn
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Set
+
+
+# Whitelist of allowed kwargs that can be set as attributes on model classes
+# This is needed for checkpoint compatibility where models may have extra attributes
+ALLOWED_KWARGS: Set[str] = {
+    # Common model configuration attributes
+    'model_name', 'model_type', 'pretrained',
+    'input_resolution', 'patch_size', 'width', 'layers', 'heads',
+    'output_dim', 'vision_width', 'vision_layers', 'vision_heads',
+    'image_size', 'vision_patch_size', 'context_length',
+    # Training-related attributes that may be saved
+    'training_dataset', 'eval_datasets', 'task_name',
+    # CLIP-specific attributes
+    'transformer_width', 'transformer_layers', 'transformer_heads',
+    'vocab_size', 'token_embedding_dim',
+}
+
+
+def _set_allowed_kwargs(obj: nn.Module, kwargs: Dict[str, Any]) -> None:
+    """
+    Set only allowed kwargs as attributes on the object.
+    
+    Args:
+        obj: Module to set attributes on
+        kwargs: Dictionary of attributes to potentially set
+    """
+    for key, value in kwargs.items():
+        if key in ALLOWED_KWARGS:
+            setattr(obj, key, value)
+        # Silently ignore unknown kwargs for checkpoint compatibility
 
 
 class ClassificationHead(nn.Module):
@@ -97,14 +127,13 @@ class ImageEncoder(nn.Module):
         Args:
             model: Underlying encoder model (optional, can be set later)
             embed_dim: Output embedding dimension
-            **kwargs: Additional arguments for compatibility
+            **kwargs: Additional arguments for compatibility (filtered for security)
         """
         super().__init__()
         self.model = model
         self.embed_dim = embed_dim
-        # Store additional kwargs for compatibility with various checkpoint formats
-        for key, value in kwargs.items():
-            setattr(self, key, value)
+        # Store allowed kwargs for compatibility with various checkpoint formats
+        _set_allowed_kwargs(self, kwargs)
     
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         """
@@ -159,7 +188,7 @@ class ImageClassifier(nn.Module):
             embed_dim: Embedding dimension from encoder
             num_classes: Number of output classes
             process_images: Whether to apply preprocessing
-            **kwargs: Additional arguments for compatibility
+            **kwargs: Additional arguments for compatibility (filtered for security)
         """
         super().__init__()
         
@@ -174,9 +203,8 @@ class ImageClassifier(nn.Module):
         else:
             self.classification_head = ClassificationHead(embed_dim, num_classes)
         
-        # Store additional kwargs for compatibility
-        for key, value in kwargs.items():
-            setattr(self, key, value)
+        # Store allowed kwargs for compatibility
+        _set_allowed_kwargs(self, kwargs)
     
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         """
@@ -229,8 +257,8 @@ class CLIPEncoder(nn.Module):
         super().__init__()
         self.model = model
         self.embed_dim = embed_dim
-        for key, value in kwargs.items():
-            setattr(self, key, value)
+        # Store allowed kwargs for compatibility
+        _set_allowed_kwargs(self, kwargs)
     
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         """Encode images."""

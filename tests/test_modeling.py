@@ -76,8 +76,8 @@ def test_model_save_load_full():
         # Verify
         assert isinstance(loaded, ImageClassifier)
         assert loaded.num_classes == 47
-        assert torch.allclose(loaded.classification_head.head.weight, 
-                            torch.ones_like(loaded.classification_head.head.weight) * 0.5)
+        expected_weight = torch.ones_like(loaded.classification_head.head.weight) * 0.5
+        assert torch.allclose(loaded.classification_head.head.weight, expected_weight)
 
 
 def test_model_state_dict():
@@ -98,7 +98,8 @@ def test_model_state_dict():
         # Save state dict
         torch.save(state_dict, path)
         
-        # Load it back
+        # Load it back - weights_only=False needed because we're testing
+        # full pickle loading as used by checkpoint loading
         loaded = torch.load(path, weights_only=False)
         
         # Create new model and load state dict
