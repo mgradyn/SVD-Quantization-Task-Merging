@@ -73,7 +73,7 @@ Compute SVD: $T = U \Sigma V^T$
 
 Select rank $k$ based on energy threshold:
 
-$$k = \min\left\{j : \frac{\sum_{i=1}^j \sigma_i^2}{\sum_{i=1}^r \sigma_i^2} \geq \alpha, k \leq k_{max}\right\}$$
+$$k = \min\left\{ j \in \{1, 2, \dots, k_{\text{max}}\} : \frac{\sum_{i=1}^j \sigma_i^2}{\sum_{i=1}^r \sigma_i^2} \geq \alpha \right\}$$
 
 Split basis:
 - $U_{high} = U[:, :k]$ (high energy)
