@@ -81,7 +81,7 @@ def reload_merged_model_from_artifacts(
     merged_model_path = os.path.join(artifact_dir, "merged_state_dict.pt")
     if os.path.exists(merged_model_path):
         print(f"Loading pre-saved merged model from {merged_model_path}")
-        merged_state_dict = torch.load(merged_model_path, map_location=device)
+        merged_state_dict = torch.load(merged_model_path, map_location=device, weights_only=False)
         return merged_state_dict
     
     # If not available, reconstruct from artifacts

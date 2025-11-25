@@ -129,7 +129,7 @@ def load_basis(
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Basis file not found: {filepath}")
     
-    data = torch.load(filepath, map_location=device)
+    data = torch.load(filepath, map_location=device, weights_only=False)
     
     return data
 
@@ -197,7 +197,7 @@ def load_compressed_coefficients(
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Coefficients file not found: {filepath}")
     
-    data = torch.load(filepath, map_location=device)
+    data = torch.load(filepath, map_location=device, weights_only=False)
     
     return data
 
