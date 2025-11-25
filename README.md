@@ -22,10 +22,6 @@ Key features:
 - Full artifact storage and reload capability
 - Comprehensive diagnostics and compression metrics
 
-### Legacy Implementation
-
-The original three-phase approach for CLIP ViT-B/32 models is still available in the root directory.
-
 ## Quick Start
 
 ### Installation
@@ -80,8 +76,10 @@ See [docs/svd_hybrid.md](docs/svd_hybrid.md) for detailed documentation.
 │   └── test_rtvq.py          # Quantization tests
 ├── docs/
 │   └── svd_hybrid.md         # Detailed documentation
-├── load_and_merge.py         # Artifact reconstruction
-└── (legacy files)            # Original implementation
+├── quantization_utils.py     # Core TVQ quantization functions
+├── task_vectors.py           # Task vector classes
+├── dataset_constants.py      # Standard task definitions
+└── load_and_merge.py         # Artifact reconstruction
 ```
 
 ## Features
@@ -242,17 +240,6 @@ pytest tests/ -v
 pytest tests/test_rank_selection.py -v
 pytest tests/test_rtvq.py -v
 pytest tests/test_mask_strategies.py -v
-```
-
-## Legacy Implementation
-
-The original CLIP-based implementation is available in the root directory. See files:
-- `run_light_experiment.py`
-- `config.py`, `svd_basis.py`, `compression.py`, etc.
-
-To run the legacy version:
-```bash
-python run_light_experiment.py --data-root /path/to/datasets --output-root ./svd_out
 ```
 
 ## Documentation
