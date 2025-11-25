@@ -1,6 +1,57 @@
 """
 Task weighting utilities for performance-based and cluster-based merging.
+
+=== TUTORIAL: Task Weighting in Model Merging ===
+
+When merging multiple task vectors, we need to decide how much weight to give
+each task. Different weighting strategies can significantly impact the
+merged model's performance.
+
+=== WEIGHTING STRATEGIES ===
+
+1. **Uniform Weighting** (Default)
+   - All tasks get equal weight: w_i = 1/N
+   - Simple and often works well
+   - Good when all tasks are equally important
+
+2. **Performance-Based Weighting**
+   - Weight tasks by their validation accuracy
+   - Better-performing tasks get more influence
+   - Uses softmax with temperature: w_i ∝ exp(acc_i / T)
+   - Higher temperature = more uniform, lower = more concentrated
+
+3. **Cluster-Based Weighting**
+   - Group similar tasks into clusters
+   - Equal weight within clusters
+   - Clusters can be weighted by average performance
+   - Good when some tasks are very similar to each other
+
+=== SOFTMAX TEMPERATURE ===
+
+The temperature parameter controls how "peaked" the weight distribution is:
+
+- Temperature = 0.1 → Almost all weight on best task
+- Temperature = 1.0 → Proportional to exp(accuracy)
+- Temperature = 5.0 → More uniform (recommended)
+- Temperature = ∞ → Exactly uniform
+
+=== EXAMPLE ===
+
+    >>> from weighting import compute_weights
+    >>> 
+    >>> tasks = ["Cars", "DTD", "EuroSAT", "SUN397"]
+    >>> 
+    >>> # Uniform weighting
+    >>> weights = compute_weights(tasks, "uniform")
+    >>> # {'Cars': 0.25, 'DTD': 0.25, 'EuroSAT': 0.25, 'SUN397': 0.25}
+    >>> 
+    >>> # Performance-based weighting
+    >>> weights = compute_weights(tasks, "performance", 
+    ...                           performance_file="accuracies.json",
+    ...                           temperature=5.0)
+    >>> # Weights vary based on task accuracies
 """
+
 import torch
 import json
 from typing import Dict, List, Optional
@@ -14,12 +65,30 @@ def load_performance_metrics(
     """
     Load per-task performance metrics from JSON file.
     
+    Reads a JSON file containing task accuracies or other performance metrics.
+    Supports fuzzy matching of task names (case insensitive, ignores underscores/dashes).
+    
+    === EXPECTED FILE FORMAT ===
+    
+    Simple format:
+        {
+            "Cars": 0.85,
+            "DTD": 0.72,
+            "EuroSAT": 0.93,
+            "SUN397": 0.78
+        }
+    
     Args:
         performance_file: Path to JSON file with performance metrics
         task_names: List of task names to load metrics for
         
     Returns:
-        Dictionary mapping task_name -> accuracy/performance
+        Dictionary mapping task_name -> accuracy/performance value
+        
+    Example:
+        >>> metrics = load_performance_metrics("accuracies.json", ["Cars", "DTD"])
+        >>> print(metrics)
+        {'Cars': 0.85, 'DTD': 0.72}
     """
     with open(performance_file, 'r') as f:
         data = json.load(f)
@@ -52,11 +121,19 @@ def compute_uniform_weights(task_names: List[str]) -> Dict[str, float]:
     """
     Compute uniform weights (all tasks equal).
     
+    The simplest weighting strategy - each task gets weight 1/N.
+    Often works well when tasks are of similar importance and difficulty.
+    
     Args:
         task_names: List of task names
         
     Returns:
-        Dictionary mapping task_name -> weight
+        Dictionary mapping task_name -> weight (all weights sum to 1)
+        
+    Example:
+        >>> weights = compute_uniform_weights(["Cars", "DTD", "EuroSAT"])
+        >>> weights
+        {'Cars': 0.333..., 'DTD': 0.333..., 'EuroSAT': 0.333...}
     """
     weight = 1.0 / len(task_names)
     return {name: weight for name in task_names}
@@ -69,23 +146,46 @@ def compute_performance_weights(
     """
     Compute performance-based weights using softmax.
     
+    Higher-performing tasks get larger weights. The temperature parameter
+    controls how sharply weights are distributed.
+    
+    === FORMULA ===
+    
+    w_i = exp(acc_i / T) / Σ exp(acc_j / T)
+    
+    This is a softmax over accuracies, where T controls the sharpness.
+    
+    === TEMPERATURE EFFECTS ===
+    
+    - T → 0: Winner takes all (only best task matters)
+    - T = 1: Standard softmax
+    - T → ∞: Uniform weights (all tasks equal)
+    
+    Recommended: T = 5.0 for moderate differentiation
+    
     Args:
-        performance_metrics: Dictionary mapping task_name -> performance
+        performance_metrics: Dictionary mapping task_name -> performance value
         temperature: Temperature for softmax (higher = more uniform)
         
     Returns:
-        Dictionary mapping task_name -> weight
+        Dictionary mapping task_name -> weight (all weights sum to 1)
+        
+    Example:
+        >>> metrics = {"Cars": 0.85, "DTD": 0.72, "EuroSAT": 0.93}
+        >>> weights = compute_performance_weights(metrics, temperature=5.0)
+        >>> # EuroSAT gets highest weight (0.93 accuracy)
     """
     if not performance_metrics:
         return {}
     
+    # Get task names and performance values in consistent order
     task_names = list(performance_metrics.keys())
     performances = torch.tensor([performance_metrics[name] for name in task_names])
     
-    # Apply temperature
+    # Apply temperature scaling
     scaled = performances / temperature
     
-    # Softmax
+    # Apply softmax to get normalized weights
     weights = torch.softmax(scaled, dim=0)
     
     return {name: weight.item() for name, weight in zip(task_names, weights)}
@@ -99,28 +199,46 @@ def compute_cluster_weights(
     """
     Compute weights based on cluster assignments.
     
-    Within each cluster, tasks have equal weight.
-    Optionally, clusters can be weighted by their mean performance.
+    When tasks are clustered (grouped by similarity), this strategy gives
+    equal weight within each cluster. Optionally, clusters themselves can
+    be weighted by their average performance.
+    
+    === HOW IT WORKS ===
+    
+    1. Group tasks by cluster
+    2. Each cluster gets weight 1/num_clusters (or weighted by performance)
+    3. Cluster weight is divided equally among its members
+    4. Final weights are normalized to sum to 1
+    
+    === EXAMPLE ===
+    
+    Tasks: [A, B, C, D, E, F]
+    Clusters: {A: 0, B: 0, C: 1, D: 1, E: 1, F: 2}
+    
+    Cluster 0 (A, B): Each gets 0.5 * (1/3) = 0.167
+    Cluster 1 (C, D, E): Each gets 0.333 * (1/3) = 0.111
+    Cluster 2 (F): Gets 1.0 * (1/3) = 0.333
     
     Args:
         task_names: List of task names
         cluster_assignments: Dictionary mapping task_name -> cluster_id
-        cluster_performance: Optional dictionary mapping cluster_id -> performance
+        cluster_performance: Optional dict mapping cluster_id -> performance
+            If provided, clusters are weighted by softmax of performance
         
     Returns:
-        Dictionary mapping task_name -> weight
+        Dictionary mapping task_name -> weight (all weights sum to 1)
     """
     # Count tasks per cluster
     cluster_counts = {}
     for task_name in task_names:
-        cluster_id = cluster_assignments.get(task_name, 0)
+        cluster_id = cluster_assignments.get(task_name, 0)  # Default to cluster 0
         cluster_counts[cluster_id] = cluster_counts.get(cluster_id, 0) + 1
     
     # Compute cluster weights
     num_clusters = len(cluster_counts)
     
     if cluster_performance is not None:
-        # Weight clusters by performance
+        # Weight clusters by performance using softmax
         cluster_ids = list(cluster_counts.keys())
         performances = torch.tensor([cluster_performance.get(cid, 1.0) for cid in cluster_ids])
         cluster_weight_tensor = torch.softmax(performances, dim=0)
@@ -137,7 +255,7 @@ def compute_cluster_weights(
         task_count = cluster_counts[cluster_id]
         task_weights[task_name] = cluster_weight / task_count
     
-    # Normalize to sum to 1
+    # Normalize to sum to 1 (handles edge cases)
     total = sum(task_weights.values())
     if total > 0:
         task_weights = {k: v / total for k, v in task_weights.items()}
@@ -156,16 +274,38 @@ def compute_weights(
     """
     Compute task weights based on specified strategy.
     
+    Main entry point for computing task weights. Delegates to the appropriate
+    weighting function based on the strategy.
+    
+    === STRATEGIES ===
+    
+    - "uniform": Equal weights for all tasks (no extra args needed)
+    - "performance": Weight by task accuracy (requires performance_file)
+    - "cluster": Weight by cluster membership (requires cluster_assignments)
+    
     Args:
         task_names: List of task names
-        weighting_strategy: "uniform", "performance", or "cluster"
-        performance_file: Path to performance metrics JSON (for "performance")
-        temperature: Temperature for softmax (for "performance")
-        cluster_assignments: Cluster assignments (for "cluster")
-        cluster_performance: Cluster performance metrics (for "cluster")
+        weighting_strategy: One of "uniform", "performance", or "cluster"
+        performance_file: Path to JSON with task accuracies (for "performance")
+        temperature: Softmax temperature (for "performance")
+        cluster_assignments: Dict mapping task -> cluster_id (for "cluster")
+        cluster_performance: Optional cluster performance metrics (for "cluster")
         
     Returns:
-        Dictionary mapping task_name -> weight
+        Dictionary mapping task_name -> weight (all weights sum to 1)
+        
+    Example:
+        >>> # Uniform
+        >>> weights = compute_weights(["A", "B", "C"], "uniform")
+        >>> 
+        >>> # Performance-based
+        >>> weights = compute_weights(["A", "B", "C"], "performance",
+        ...                           performance_file="acc.json", temperature=5.0)
+        >>> 
+        >>> # Cluster-based
+        >>> clusters = {"A": 0, "B": 0, "C": 1}
+        >>> weights = compute_weights(["A", "B", "C"], "cluster",
+        ...                           cluster_assignments=clusters)
     """
     if weighting_strategy == "uniform":
         return compute_uniform_weights(task_names)
