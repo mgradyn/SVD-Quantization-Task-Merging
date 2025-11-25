@@ -1,5 +1,41 @@
 # SVD-Hybrid Merging Method
 
+## Quick Tutorial: What is SVD-Hybrid?
+
+SVD-Hybrid is a technique for combining multiple fine-tuned machine learning models into a single model that can perform well on all their tasks. Think of it like this:
+
+**Problem**: You have 8 different models, each specialized for one task (cars, textures, scenes, etc.). Running all 8 models is slow and expensive.
+
+**Solution**: SVD-Hybrid merges them into ONE model that handles ALL tasks.
+
+### How It Works (Simple Version)
+
+1. **Extract what each model learned**: For each fine-tuned model, compute the difference from the base model. This difference is called a "task vector".
+
+2. **Find common patterns**: Use SVD (a math technique) to find the most important directions that explain all task vectors.
+
+3. **Keep important stuff, compress the rest**: Important parts stay in high precision (FP16). Less important parts get heavily compressed (4-bit).
+
+4. **Average everything together**: Combine all tasks with weights (equal, performance-based, or clustered).
+
+5. **Create merged model**: Add the merged task vector to the base model.
+
+### Visual Overview
+
+```
+Fine-tuned Models           Task Vectors              SVD Compression
+[Cars Model]     ->    [Cars Delta]      ┐
+[DTD Model]      ->    [DTD Delta]       ├─> [High Energy (FP16)]
+[EuroSAT Model]  ->    [EuroSAT Delta]   │   [Low Energy (4-bit)]
+[SUN397 Model]   ->    [SUN397 Delta]    ┘
+                            │
+                            ▼
+                    Weighted Average
+                            │
+                            ▼
+                [Base Model] + [Merged Delta] = [Merged Model]
+```
+
 ## Overview
 
 SVD-Hybrid is an advanced model merging technique that combines:

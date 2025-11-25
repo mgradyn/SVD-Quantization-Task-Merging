@@ -1,6 +1,47 @@
 """
 Artifact storage and loading utilities.
+
+=== TUTORIAL: Saving and Loading Artifacts ===
+
+SVD-Hybrid produces several artifacts that can be saved for later use:
+
+1. **Bases**: SVD basis matrices (U_high, U_low) for each parameter
+2. **Coefficients**: Compressed coefficients for each task
+3. **Diagnostics**: Reconstruction errors and compression metrics
+4. **Config**: The configuration used for the merge
+
+Saving artifacts allows you to:
+- Reconstruct the merged model later without original checkpoints
+- Share compression results without full model files
+- Analyze reconstruction quality and compression ratios
+
+=== DIRECTORY STRUCTURE ===
+
+After saving artifacts:
+    artifact_dir/
+    ├── basis/                    # SVD bases per parameter
+    │   ├── layer1.weight.pt
+    │   └── layer2.weight.pt
+    ├── coeffs/                   # Compressed coefficients
+    │   ├── layer1.weight.pt
+    │   └── layer2.weight.pt
+    ├── diagnostics.json          # Error metrics and statistics
+    └── config.json               # Configuration used
+
+=== EXAMPLE ===
+
+    >>> from storage import save_all_artifacts, load_all_artifacts
+    >>> 
+    >>> # Save everything after merging
+    >>> save_all_artifacts(bases, compressed, diagnostics, config, "./artifacts")
+    >>> 
+    >>> # Later, reload everything
+    >>> artifacts = load_all_artifacts("./artifacts")
+    >>> bases = artifacts["bases"]
+    >>> compressed = artifacts["compressed"]
+    >>> config = artifacts["config"]
 """
+
 import torch
 import json
 import os
@@ -16,21 +57,25 @@ def save_basis(
     """
     Save basis for a single parameter.
     
+    Saves the SVD basis matrices and metadata for one parameter to a .pt file.
+    
     Args:
-        basis: Basis dictionary
-        param_name: Parameter name
-        output_dir: Output directory
+        basis: Basis dictionary containing U_high, U_low, singular_values, etc.
+        param_name: Parameter name (e.g., "layer1.weight")
+        output_dir: Output directory (will create "basis/" subdirectory)
     """
+    # Create basis subdirectory
     basis_dir = os.path.join(output_dir, "basis")
     os.makedirs(basis_dir, exist_ok=True)
     
-    # Sanitize parameter name for filename
+    # Sanitize parameter name for filename (replace slashes)
     safe_name = param_name.replace("/", "_").replace("\\", "_")
     filepath = os.path.join(basis_dir, f"{safe_name}.pt")
     
     # Prepare data to save
     data = {}
     
+    # Save masked (signal) basis if present
     if basis.get("masked") is not None:
         masked = basis["masked"]
         data["masked"] = {
@@ -44,6 +89,7 @@ def save_basis(
             "N": masked["N"]
         }
     
+    # Save noise basis if present
     if basis.get("noise") is not None:
         noise = basis["noise"]
         data["noise"] = {
