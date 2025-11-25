@@ -18,8 +18,10 @@ module provides the necessary class definitions to load those checkpoints.
 === SUPPORTED MODEL TYPES ===
 
 1. **ImageClassifier**: CLIP-based image classifier with classification head
-2. **ImageEncoder**: CLIP image encoder wrapper
-3. **ClassificationHead**: Linear classification head
+2. **ImageEncoder**: CLIP image encoder wrapper (supports open_clip)
+3. **ClassificationHead**: Linear classification head with optional normalization
+4. **MultiHeadImageClassifier**: Classifier with multiple heads for multi-task learning
+5. **ImageClassifier_debug**: Debug classifier with two encoders
 
 === USAGE ===
 
@@ -32,11 +34,23 @@ don't need to use it directly:
 If you need to explicitly import for custom unpickling:
 
     from src.modeling import ImageClassifier, ImageEncoder
+
+=== COMPATIBILITY ===
+
+This module includes aliases for older checkpoint formats:
+- VisualTransformer: Alias for open_clip's VisionTransformer (name changed in newer versions)
 """
 
 import torch
 import torch.nn as nn
-from typing import Optional, Dict, Any, Set
+from typing import Optional, Dict, Any, Set, List
+
+# Try to import open_clip, but don't fail if not available
+try:
+    import open_clip
+    OPEN_CLIP_AVAILABLE = True
+except ImportError:
+    OPEN_CLIP_AVAILABLE = False
 
 
 # Whitelist of allowed kwargs that can be set as attributes on model classes
@@ -52,6 +66,8 @@ ALLOWED_KWARGS: Set[str] = {
     # CLIP-specific attributes
     'transformer_width', 'transformer_layers', 'transformer_heads',
     'vocab_size', 'token_embedding_dim',
+    # ImageEncoder specific attributes
+    'cache_dir', 'openclip_cachedir', 'preweight',
 }
 
 
@@ -69,54 +85,116 @@ def _set_allowed_kwargs(obj: nn.Module, kwargs: Dict[str, Any]) -> None:
         # Silently ignore unknown kwargs for checkpoint compatibility
 
 
-class ClassificationHead(nn.Module):
+def torch_save(obj: Any, filename: str) -> None:
+    """Save object using torch.save."""
+    torch.save(obj, filename)
+
+
+def torch_load(filename: str, map_location: str = 'cpu') -> Any:
+    """Load object using torch.load."""
+    return torch.load(filename, map_location=map_location, weights_only=False)
+
+
+class ClassificationHead(nn.Linear):
     """
     Linear classification head for image classification.
     
     Takes features from an encoder and produces class logits.
+    Optionally normalizes input features before classification.
+    
+    This class extends nn.Linear to provide direct weight/bias initialization
+    from pre-computed embeddings (e.g., text embeddings for zero-shot).
     
     Attributes:
-        head: Linear layer mapping features to num_classes
+        normalize: Whether to L2-normalize input features
+        weight: Classification weights [num_classes, embed_dim]
+        bias: Classification biases [num_classes]
     """
     
     def __init__(
         self,
-        in_features: int,
-        num_classes: int,
-        bias: bool = True
+        normalize: bool = True,
+        weights: Optional[torch.Tensor] = None,
+        biases: Optional[torch.Tensor] = None,
+        in_features: Optional[int] = None,
+        num_classes: Optional[int] = None
     ):
         """
         Initialize classification head.
         
+        Can be initialized either with pre-computed weights or with dimensions.
+        
         Args:
-            in_features: Input feature dimension (from encoder)
-            num_classes: Number of output classes
-            bias: Whether to include bias in linear layer
+            normalize: Whether to L2-normalize input features before classification
+            weights: Pre-computed weight matrix [num_classes, embed_dim]
+            biases: Pre-computed bias vector [num_classes] (optional)
+            in_features: Input feature dimension (used if weights is None)
+            num_classes: Number of output classes (used if weights is None)
         """
-        super().__init__()
-        self.head = nn.Linear(in_features, num_classes, bias=bias)
-        self.in_features = in_features
-        self.num_classes = num_classes
+        if weights is not None:
+            output_size, input_size = weights.shape
+        else:
+            if in_features is None or num_classes is None:
+                raise ValueError("Either weights or (in_features, num_classes) must be provided")
+            input_size = in_features
+            output_size = num_classes
+        
+        super().__init__(input_size, output_size)
+        self.normalize = normalize
+        self.in_features = input_size
+        self.num_classes = output_size
+        
+        if weights is not None:
+            self.weight = nn.Parameter(weights.clone())
+        if biases is not None:
+            self.bias = nn.Parameter(biases.clone())
+        else:
+            self.bias = nn.Parameter(torch.zeros_like(self.bias))
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass through classification head."""
-        return self.head(x)
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through classification head.
+        
+        Args:
+            inputs: Feature tensor [B, embed_dim]
+            
+        Returns:
+            Class logits [B, num_classes]
+        """
+        if self.normalize:
+            inputs = inputs / inputs.norm(dim=-1, keepdim=True)
+        return super().forward(inputs)
+    
+    def save(self, filename: str) -> None:
+        """Save classification head to file."""
+        print(f'Saving classification head to {filename}')
+        torch_save(self, filename)
+    
+    @classmethod
+    def load(cls, filename: str) -> 'ClassificationHead':
+        """Load classification head from file."""
+        print(f'Loading classification head from {filename}')
+        return torch_load(filename)
 
 
 class ImageEncoder(nn.Module):
     """
-    Wrapper for CLIP image encoder.
+    Wrapper for CLIP image encoder using open_clip.
     
     Provides a consistent interface for different CLIP model variants.
-    Can wrap encoders from open_clip, transformers, or other sources.
+    Supports loading models from open_clip with custom pretrained weights.
     
     Attributes:
-        model: The underlying image encoder model
-        embed_dim: Output embedding dimension
+        model: The underlying CLIP model (full model, not just visual)
+        train_preprocess: Preprocessing transform for training
+        val_preprocess: Preprocessing transform for validation/inference
+        cache_dir: Directory for caching checkpoints
     """
     
     def __init__(
         self,
+        args: Optional[Any] = None,
+        keep_lang: bool = False,
         model: Optional[nn.Module] = None,
         embed_dim: int = 512,
         **kwargs
@@ -124,14 +202,41 @@ class ImageEncoder(nn.Module):
         """
         Initialize image encoder wrapper.
         
+        Can be initialized either with args (for open_clip loading) or with a model directly.
+        
         Args:
-            model: Underlying encoder model (optional, can be set later)
-            embed_dim: Output embedding dimension
+            args: Arguments object with model, preweight, openclip_cachedir, cache_dir attributes
+            keep_lang: Whether to keep the language transformer (default: False)
+            model: Underlying encoder model (optional, can be set later for compatibility)
+            embed_dim: Output embedding dimension (used if model is None)
             **kwargs: Additional arguments for compatibility (filtered for security)
         """
         super().__init__()
-        self.model = model
+        
         self.embed_dim = embed_dim
+        self.cache_dir = None
+        self.train_preprocess = None
+        self.val_preprocess = None
+        
+        if args is not None and OPEN_CLIP_AVAILABLE:
+            print(f'Loading {args.model} pre-trained weights.')
+            if '__pretrained__' in args.model:
+                name, pretrained = args.model.split('__pretrained__')
+            else:
+                name = args.model
+                pretrained = getattr(args, 'preweight', 'openai')
+            
+            openclip_cachedir = getattr(args, 'openclip_cachedir', None)
+            self.model, self.train_preprocess, self.val_preprocess = open_clip.create_model_and_transforms(
+                name, pretrained=pretrained, cache_dir=openclip_cachedir)
+            
+            self.cache_dir = getattr(args, 'cache_dir', None)
+            
+            if not keep_lang and hasattr(self.model, 'transformer'):
+                delattr(self.model, 'transformer')
+        else:
+            self.model = model
+        
         # Store allowed kwargs for compatibility with various checkpoint formats
         _set_allowed_kwargs(self, kwargs)
     
@@ -146,12 +251,23 @@ class ImageEncoder(nn.Module):
             Image features [B, embed_dim]
         """
         if self.model is not None:
-            return self.model(images)
+            return self.model.encode_image(images)
         raise NotImplementedError("No underlying model set")
     
     def encode_image(self, images: torch.Tensor) -> torch.Tensor:
         """Alias for forward, matching CLIP API."""
         return self.forward(images)
+    
+    def save(self, filename: str) -> None:
+        """Save image encoder to file."""
+        print(f'Saving image encoder to {filename}')
+        torch_save(self, filename)
+    
+    @classmethod
+    def load(cls, filename: str) -> 'ImageEncoder':
+        """Load image encoder from file."""
+        print(f'Loading image encoder from {filename}')
+        return torch_load(filename)
 
 
 class ImageClassifier(nn.Module):
@@ -167,7 +283,8 @@ class ImageClassifier(nn.Module):
     Attributes:
         image_encoder: CLIP image encoder (or wrapper)
         classification_head: Linear head for classification
-        process_images: Whether to preprocess images
+        train_preprocess: Preprocessing transform for training (from encoder)
+        val_preprocess: Preprocessing transform for validation (from encoder)
     """
     
     def __init__(
@@ -193,42 +310,41 @@ class ImageClassifier(nn.Module):
         super().__init__()
         
         self.image_encoder = image_encoder
+        self.classification_head = classification_head
         self.embed_dim = embed_dim
         self.num_classes = num_classes
         self.process_images = process_images
         
-        # Create classification head if not provided
-        if classification_head is not None:
-            self.classification_head = classification_head
-        else:
-            self.classification_head = ClassificationHead(embed_dim, num_classes)
+        # Inherit preprocessing transforms from encoder if available
+        if self.image_encoder is not None:
+            if hasattr(self.image_encoder, 'train_preprocess'):
+                self.train_preprocess = self.image_encoder.train_preprocess
+                self.val_preprocess = self.image_encoder.val_preprocess
+            elif hasattr(self.image_encoder, 'model') and hasattr(self.image_encoder.model, 'train_preprocess'):
+                self.train_preprocess = self.image_encoder.model.train_preprocess
+                self.val_preprocess = self.image_encoder.model.val_preprocess
         
         # Store allowed kwargs for compatibility
         _set_allowed_kwargs(self, kwargs)
     
-    def forward(self, images: torch.Tensor) -> torch.Tensor:
+    def freeze_head(self) -> None:
+        """Freeze classification head weights and biases."""
+        self.classification_head.weight.requires_grad_(False)
+        self.classification_head.bias.requires_grad_(False)
+    
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         """
         Forward pass: encode images and classify.
         
         Args:
-            images: Input images [B, C, H, W]
+            inputs: Input images [B, C, H, W]
             
         Returns:
             Class logits [B, num_classes]
         """
-        # Get image features
-        if self.image_encoder is not None:
-            if hasattr(self.image_encoder, 'encode_image'):
-                features = self.image_encoder.encode_image(images)
-            else:
-                features = self.image_encoder(images)
-        else:
-            # If no encoder, assume images are already features
-            features = images
-        
-        # Classify
-        logits = self.classification_head(features)
-        return logits
+        features = self.image_encoder(inputs)
+        outputs = self.classification_head(features)
+        return outputs
     
     def get_image_features(self, images: torch.Tensor) -> torch.Tensor:
         """Get image features without classification."""
@@ -237,6 +353,17 @@ class ImageClassifier(nn.Module):
                 return self.image_encoder.encode_image(images)
             return self.image_encoder(images)
         return images
+    
+    def save(self, filename: str) -> None:
+        """Save image classifier to file."""
+        print(f'Saving image classifier to {filename}')
+        torch_save(self, filename)
+    
+    @classmethod
+    def load(cls, filename: str) -> 'ImageClassifier':
+        """Load image classifier from file."""
+        print(f'Loading image classifier from {filename}')
+        return torch_load(filename)
 
 
 class CLIPEncoder(nn.Module):
@@ -271,7 +398,157 @@ class CLIPEncoder(nn.Module):
         return self.forward(images)
 
 
+class ImageClassifier_debug(nn.Module):
+    """
+    Debug classifier with two image encoders.
+    
+    This class is useful for debugging and comparing encoder outputs.
+    It combines features from two encoders before classification.
+    
+    Attributes:
+        image_encoder: First CLIP image encoder
+        image_encoder2: Second CLIP image encoder
+        classification_head: Linear head for classification
+    """
+    
+    def __init__(
+        self,
+        image_encoder: nn.Module,
+        image_encoder2: nn.Module,
+        classification_head: nn.Module
+    ):
+        """
+        Initialize debug classifier.
+        
+        Args:
+            image_encoder: First image encoder
+            image_encoder2: Second image encoder
+            classification_head: Classification head
+        """
+        super().__init__()
+        self.image_encoder = image_encoder
+        self.image_encoder2 = image_encoder2
+        self.classification_head = classification_head
+        if self.image_encoder is not None:
+            self.train_preprocess = self.image_encoder.train_preprocess
+            self.val_preprocess = self.image_encoder.val_preprocess
+    
+    def freeze_head(self) -> None:
+        """Freeze classification head weights and biases."""
+        self.classification_head.weight.requires_grad_(False)
+        self.classification_head.bias.requires_grad_(False)
+    
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass with combined features from both encoders.
+        
+        Args:
+            inputs: Input images [B, C, H, W]
+            
+        Returns:
+            Class logits [B, num_classes]
+        """
+        features = self.image_encoder(inputs)
+        features2 = self.image_encoder2(inputs)
+        outputs = self.classification_head(features + features2)
+        return outputs
+    
+    def save(self, filename: str) -> None:
+        """Save debug classifier to file."""
+        print(f'Saving image classifier to {filename}')
+        torch_save(self, filename)
+    
+    @classmethod
+    def load(cls, filename: str) -> 'ImageClassifier_debug':
+        """Load debug classifier from file."""
+        print(f'Loading image classifier from {filename}')
+        return torch_load(filename)
+
+
+class MultiHeadImageClassifier(nn.Module):
+    """
+    Image classifier with multiple classification heads for multi-task learning.
+    
+    This class allows a single encoder to be shared across multiple tasks,
+    each with its own classification head.
+    
+    Attributes:
+        image_encoder: Shared CLIP image encoder
+        classification_heads: List of classification heads (one per task)
+    """
+    
+    def __init__(
+        self,
+        image_encoder: nn.Module,
+        classification_heads: List[nn.Module]
+    ):
+        """
+        Initialize multi-head classifier.
+        
+        Args:
+            image_encoder: Shared image encoder
+            classification_heads: List of classification heads for different tasks
+        """
+        super().__init__()
+        self.image_encoder = image_encoder
+        self.classification_heads = nn.ModuleList(classification_heads)
+        if self.image_encoder is not None:
+            self.train_preprocess = self.image_encoder.train_preprocess
+            self.val_preprocess = self.image_encoder.val_preprocess
+    
+    def freeze_head(self) -> None:
+        """Freeze all classification head weights and biases."""
+        for idx in range(len(self.classification_heads)):
+            self.classification_heads[idx].weight.requires_grad_(False)
+            self.classification_heads[idx].bias.requires_grad_(False)
+    
+    def forward(self, inputs: torch.Tensor, head_idx: int) -> torch.Tensor:
+        """
+        Forward pass through specified classification head.
+        
+        Args:
+            inputs: Input images [B, C, H, W]
+            head_idx: Index of classification head to use
+            
+        Returns:
+            Class logits [B, num_classes] for the specified head
+        """
+        features = self.image_encoder(inputs)
+        outputs = self.classification_heads[head_idx](features)
+        return outputs
+    
+    def save(self, filename: str) -> None:
+        """Save multi-head classifier to file."""
+        print(f'Saving image classifier to {filename}')
+        torch_save(self, filename)
+    
+    @classmethod
+    def load(cls, filename: str) -> 'MultiHeadImageClassifier':
+        """Load multi-head classifier from file."""
+        print(f'Loading image classifier from {filename}')
+        return torch_load(filename)
+
+
 # Alias for different naming conventions that may appear in checkpoints
 Classifier = ImageClassifier
 CLIPClassifier = ImageClassifier
 VisionClassifier = ImageClassifier
+
+
+# === COMPATIBILITY ALIASES FOR CHECKPOINT LOADING ===
+# 
+# Some older checkpoints were saved with different class names.
+# These aliases allow loading such checkpoints without modification.
+#
+# VisualTransformer: Older open_clip versions used this name for the vision encoder.
+#                    Newer versions use VisionTransformer.
+
+if OPEN_CLIP_AVAILABLE:
+    # Import VisionTransformer from open_clip and create alias for older checkpoints
+    from open_clip.model import VisionTransformer
+    VisualTransformer = VisionTransformer
+else:
+    # If open_clip is not available, create a placeholder class
+    class VisualTransformer(nn.Module):
+        """Placeholder for VisualTransformer when open_clip is not available."""
+        pass
