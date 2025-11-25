@@ -149,7 +149,8 @@ class ClassificationHead(nn.Linear):
         if biases is not None:
             self.bias = nn.Parameter(biases.clone())
         else:
-            self.bias = nn.Parameter(torch.zeros_like(self.bias))
+            # Initialize bias to zeros - use output_size directly since self.bias is already initialized
+            self.bias = nn.Parameter(torch.zeros(output_size))
     
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         """
@@ -162,7 +163,8 @@ class ClassificationHead(nn.Linear):
             Class logits [B, num_classes]
         """
         if self.normalize:
-            inputs = inputs / inputs.norm(dim=-1, keepdim=True)
+            # Add small epsilon to avoid division by zero
+            inputs = inputs / (inputs.norm(dim=-1, keepdim=True) + 1e-8)
         return super().forward(inputs)
     
     def save(self, filename: str) -> None:
@@ -329,8 +331,9 @@ class ImageClassifier(nn.Module):
     
     def freeze_head(self) -> None:
         """Freeze classification head weights and biases."""
-        self.classification_head.weight.requires_grad_(False)
-        self.classification_head.bias.requires_grad_(False)
+        if self.classification_head is not None:
+            self.classification_head.weight.requires_grad_(False)
+            self.classification_head.bias.requires_grad_(False)
     
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         """
@@ -342,6 +345,10 @@ class ImageClassifier(nn.Module):
         Returns:
             Class logits [B, num_classes]
         """
+        if self.image_encoder is None:
+            raise ValueError("image_encoder is None. Cannot perform forward pass.")
+        if self.classification_head is None:
+            raise ValueError("classification_head is None. Cannot perform forward pass.")
         features = self.image_encoder(inputs)
         outputs = self.classification_head(features)
         return outputs
@@ -430,13 +437,14 @@ class ImageClassifier_debug(nn.Module):
         self.image_encoder2 = image_encoder2
         self.classification_head = classification_head
         if self.image_encoder is not None:
-            self.train_preprocess = self.image_encoder.train_preprocess
-            self.val_preprocess = self.image_encoder.val_preprocess
+            self.train_preprocess = getattr(self.image_encoder, 'train_preprocess', None)
+            self.val_preprocess = getattr(self.image_encoder, 'val_preprocess', None)
     
     def freeze_head(self) -> None:
         """Freeze classification head weights and biases."""
-        self.classification_head.weight.requires_grad_(False)
-        self.classification_head.bias.requires_grad_(False)
+        if self.classification_head is not None:
+            self.classification_head.weight.requires_grad_(False)
+            self.classification_head.bias.requires_grad_(False)
     
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         """
@@ -493,8 +501,8 @@ class MultiHeadImageClassifier(nn.Module):
         self.image_encoder = image_encoder
         self.classification_heads = nn.ModuleList(classification_heads)
         if self.image_encoder is not None:
-            self.train_preprocess = self.image_encoder.train_preprocess
-            self.val_preprocess = self.image_encoder.val_preprocess
+            self.train_preprocess = getattr(self.image_encoder, 'train_preprocess', None)
+            self.val_preprocess = getattr(self.image_encoder, 'val_preprocess', None)
     
     def freeze_head(self) -> None:
         """Freeze all classification head weights and biases."""
