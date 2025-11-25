@@ -274,6 +274,7 @@ def get_task_checkpoint_paths(
             os.path.join(checkpoint_dir, f"{task_name}.pth"),
             os.path.join(checkpoint_dir, task_name, "checkpoint.pt"),
             os.path.join(checkpoint_dir, task_name, "model.pt"),
+            os.path.join(checkpoint_dir, task_name, "finetuned.pt"),
         ]
         
         for path in possible_paths:
