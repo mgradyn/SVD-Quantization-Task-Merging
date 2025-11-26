@@ -410,5 +410,80 @@ def test_task_vector_with_saved_model_file():
                 f"Failed to reconstruct {key}"
 
 
+def test_task_vector_with_imageencoder_like_structure():
+    """Test TaskVector with ImageEncoder-like nested model structure.
+    
+    This tests the architecture used in open_clip_torch==2.0.2 where:
+    - ImageEncoder has a .model attribute (CLIP model)
+    - CLIP model has a .visual attribute (vision encoder)
+    
+    The state_dict keys will be like 'model.visual.weight', etc.
+    """
+    # Create a model structure matching ImageEncoder from src/modeling.py
+    class MockVisualEncoder(torch.nn.Module):
+        """Simulates open_clip's visual encoder (e.g., VisualTransformer)"""
+        def __init__(self):
+            super().__init__()
+            self.conv1 = torch.nn.Conv2d(3, 64, kernel_size=3)
+            self.ln_pre = torch.nn.LayerNorm(64)
+            self.transformer = torch.nn.TransformerEncoder(
+                torch.nn.TransformerEncoderLayer(d_model=64, nhead=4, batch_first=True),
+                num_layers=2
+            )
+            self.ln_post = torch.nn.LayerNorm(64)
+            self.proj = torch.nn.Linear(64, 512)
+    
+    class MockCLIPModel(torch.nn.Module):
+        """Simulates open_clip's CLIP model"""
+        def __init__(self):
+            super().__init__()
+            self.visual = MockVisualEncoder()
+            self.logit_scale = torch.nn.Parameter(torch.ones([]))
+            
+        def encode_image(self, x):
+            return self.visual(x)
+    
+    class MockImageEncoder(torch.nn.Module):
+        """Simulates src/modeling.py ImageEncoder"""
+        def __init__(self):
+            super().__init__()
+            self.model = MockCLIPModel()
+            self.cache_dir = '/tmp'
+            
+        def forward(self, images):
+            return self.model.encode_image(images)
+    
+    # Create pretrained and finetuned encoders
+    pretrained_encoder = MockImageEncoder()
+    finetuned_encoder = MockImageEncoder()
+    
+    # Load same weights and modify
+    finetuned_encoder.load_state_dict(pretrained_encoder.state_dict())
+    with torch.no_grad():
+        for param in finetuned_encoder.parameters():
+            param.add_(0.01)
+    
+    # Create task vector - this should work with nested model structure
+    tv = task_vectors.TaskVector(pretrained_encoder, finetuned_encoder)
+    
+    # Verify keys have the nested structure
+    assert any('model.visual' in key for key in tv.vector.keys()), \
+        f"Expected nested keys like 'model.visual.*', got: {list(tv.vector.keys())[:5]}"
+    
+    # Verify deltas are correct
+    for key, delta in tv.vector.items():
+        assert torch.allclose(delta, torch.full_like(delta, 0.01), atol=1e-6), \
+            f"Expected delta ~0.01 for {key}"
+    
+    # Test apply_to
+    result = tv.apply_to(pretrained_encoder)
+    
+    # Verify reconstruction
+    for key in tv.vector.keys():
+        finetuned_value = finetuned_encoder.state_dict()[key]
+        assert torch.allclose(result[key], finetuned_value, atol=1e-6), \
+            f"Failed to reconstruct {key}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
