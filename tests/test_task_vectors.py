@@ -285,5 +285,73 @@ def test_task_vector_from_files():
         assert torch.allclose(tv.vector["weight"], expected_delta)
 
 
+def test_task_vector_from_model_object():
+    """Test creating TaskVector when checkpoint contains a torch.nn.Module object.
+    
+    This tests the fix for "argument of type 'ImageEncoder' is not iterable" error
+    by passing a torch.nn.Module directly (simulating what happens when
+    torch.load() returns a full model object).
+    """
+    # Create a simple model class to simulate ImageEncoder
+    class SimpleModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layer1 = torch.nn.Linear(10, 5)
+            self.layer2 = torch.nn.Linear(5, 2)
+    
+    # Create pretrained model
+    pretrained_model = SimpleModel()
+    
+    # Create finetuned model with same initial weights as pretrained
+    finetuned_model = SimpleModel()
+    finetuned_model.load_state_dict(pretrained_model.state_dict())
+    
+    # Modify finetuned model weights slightly
+    with torch.no_grad():
+        for name, param in finetuned_model.named_parameters():
+            param.add_(0.5)  # Add 0.5 to all parameters
+    
+    # Create task vector directly from model objects
+    # This should work now - previously would fail with 
+    # "argument of type 'SimpleModel' is not iterable"
+    tv = task_vectors.TaskVector(pretrained_model, finetuned_model)
+    
+    # Verify task vector contains the expected keys
+    assert "layer1.weight" in tv.vector
+    assert "layer1.bias" in tv.vector
+    assert "layer2.weight" in tv.vector
+    assert "layer2.bias" in tv.vector
+    
+    # The delta should be approximately 0.5 for all parameters
+    for key, delta in tv.vector.items():
+        assert torch.allclose(delta, torch.full_like(delta, 0.5), atol=1e-6)
+
+
+def test_task_vector_apply_to_model_object():
+    """Test applying TaskVector to a torch.nn.Module object directly."""
+    
+    class SimpleModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(3, 3, bias=False)
+            torch.nn.init.zeros_(self.linear.weight)
+    
+    pretrained_model = SimpleModel()
+    finetuned_model = SimpleModel()
+    
+    with torch.no_grad():
+        finetuned_model.linear.weight.fill_(2.0)
+    
+    # Create task vector from model objects
+    tv = task_vectors.TaskVector(pretrained_model, finetuned_model)
+    
+    # Apply task vector to pretrained model object (not state dict)
+    result = tv.apply_to(pretrained_model)
+    
+    # Should recover the finetuned weights
+    expected = torch.full((3, 3), 2.0)
+    assert torch.allclose(result["linear.weight"], expected)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
