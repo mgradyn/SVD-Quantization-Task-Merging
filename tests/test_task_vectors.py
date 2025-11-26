@@ -353,5 +353,62 @@ def test_task_vector_apply_to_model_object():
     assert torch.allclose(result["linear.weight"], expected)
 
 
+def test_task_vector_with_saved_model_file():
+    """Test TaskVector with checkpoint files containing torch.nn.Module objects.
+    
+    This simulates the real-world scenario where finetune.pt contains a full
+    model object (like ImageEncoder) rather than just a state dict.
+    """
+    # Create models using Sequential (which can be pickled unlike local classes)
+    pretrained_model = torch.nn.Sequential(
+        torch.nn.Linear(512, 256),
+        torch.nn.ReLU(),
+        torch.nn.Linear(256, 100)
+    )
+    
+    finetuned_model = torch.nn.Sequential(
+        torch.nn.Linear(512, 256),
+        torch.nn.ReLU(),
+        torch.nn.Linear(256, 100)
+    )
+    # Copy pretrained weights and add delta
+    finetuned_model.load_state_dict(pretrained_model.state_dict())
+    with torch.no_grad():
+        for param in finetuned_model.parameters():
+            param.add_(0.1)
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Save FULL MODEL OBJECTS (not state dicts) - simulates real finetune.pt
+        pretrained_path = os.path.join(tmpdir, "pretrained.pt")
+        finetuned_path = os.path.join(tmpdir, "finetune.pt")
+        
+        torch.save(pretrained_model, pretrained_path)
+        torch.save(finetuned_model, finetuned_path)
+        
+        # Create task vector from file paths - this should work now
+        # Previously would fail with "argument of type 'Sequential' is not iterable"
+        tv = task_vectors.TaskVector(pretrained_path, finetuned_path)
+        
+        # Verify task vector was created correctly
+        assert "0.weight" in tv.vector  # First Linear layer weight
+        assert "0.bias" in tv.vector    # First Linear layer bias
+        assert "2.weight" in tv.vector  # Second Linear layer weight
+        assert "2.bias" in tv.vector    # Second Linear layer bias
+        
+        # Verify delta values are approximately 0.1
+        for key, delta in tv.vector.items():
+            assert torch.allclose(delta, torch.full_like(delta, 0.1), atol=1e-6), \
+                f"Expected delta ~0.1 for {key}, got {delta.mean().item()}"
+        
+        # Test apply_to with the file path
+        result = tv.apply_to(pretrained_path)
+        
+        # Verify that applying task vector reconstructs finetuned weights
+        for key in tv.vector.keys():
+            finetuned_value = finetuned_model.state_dict()[key]
+            assert torch.allclose(result[key], finetuned_value, atol=1e-6), \
+                f"Failed to reconstruct {key}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
