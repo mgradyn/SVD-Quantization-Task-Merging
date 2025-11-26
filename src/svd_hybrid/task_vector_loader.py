@@ -80,6 +80,10 @@ def load_checkpoint(checkpoint_path: str, device: str = "cpu") -> Dict[str, torc
     # Load checkpoint (map_location='cpu' prevents GPU memory issues)
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
+    # Handle torch.nn.Module objects (full model saved via torch.save(model, path))
+    if isinstance(checkpoint, torch.nn.Module):
+        return checkpoint.state_dict()
+    
     # Handle different checkpoint formats
     if isinstance(checkpoint, dict):
         # Check for nested state dict under various keys

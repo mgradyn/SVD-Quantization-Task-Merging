@@ -58,6 +58,43 @@ from pathlib import Path
 import quantization_utils
 
 
+def _extract_state_dict(checkpoint) -> Dict[str, torch.Tensor]:
+    """
+    Extract state dict from a checkpoint, handling various formats.
+    
+    This helper function handles:
+    1. Direct state dicts (dict with tensor values)
+    2. Nested dicts with "state_dict", "model", or "model_state_dict" keys
+    3. Full model objects (torch.nn.Module) by calling .state_dict()
+    
+    Args:
+        checkpoint: Loaded checkpoint (could be dict, state dict, or model object)
+        
+    Returns:
+        State dictionary mapping parameter name to tensor
+    """
+    # Handle torch.nn.Module objects (full model saved via torch.save(model, path))
+    if isinstance(checkpoint, torch.nn.Module):
+        return checkpoint.state_dict()
+    
+    # Handle dictionary formats
+    if isinstance(checkpoint, dict):
+        # Check for nested state dict under various keys
+        if "state_dict" in checkpoint:
+            return checkpoint["state_dict"]
+        elif "model" in checkpoint:
+            return checkpoint["model"]
+        elif "model_state_dict" in checkpoint:
+            return checkpoint["model_state_dict"]
+        else:
+            # Assume it's already a state dict
+            return checkpoint
+    
+    # If it's neither a Module nor a dict, it might be a state dict directly
+    # (though this is unusual, return as-is and let caller handle)
+    return checkpoint
+
+
 class TaskVector:
     """
     Represents a task vector (delta = finetuned - pretrained).
@@ -143,13 +180,10 @@ class TaskVector:
         else:
             finetuned_state = finetuned_checkpoint
         
-        # Step 3: Handle nested state dicts
-        # Some checkpoint formats wrap the state dict in a dictionary with a "state_dict" key
-        # (e.g., PyTorch Lightning checkpoints)
-        if "state_dict" in pretrained_state:
-            pretrained_state = pretrained_state["state_dict"]
-        if "state_dict" in finetuned_state:
-            finetuned_state = finetuned_state["state_dict"]
+        # Step 3: Handle nested state dicts and model objects
+        # Extract state dict from various checkpoint formats including torch.nn.Module objects
+        pretrained_state = _extract_state_dict(pretrained_state)
+        finetuned_state = _extract_state_dict(finetuned_state)
         
         # Step 4: Compute task vector (delta) for each parameter
         self.vector = {}
@@ -297,12 +331,13 @@ class TaskVector:
         if isinstance(pretrained_checkpoint, str):
             pretrained_state = torch.load(pretrained_checkpoint, map_location='cpu', weights_only=False)
         else:
-            # Make a copy to avoid modifying the input
-            pretrained_state = pretrained_checkpoint.copy()
+            pretrained_state = pretrained_checkpoint
         
-        # Handle nested state dicts
-        if "state_dict" in pretrained_state:
-            pretrained_state = pretrained_state["state_dict"]
+        # Extract state dict from various checkpoint formats including torch.nn.Module objects
+        pretrained_state = _extract_state_dict(pretrained_state)
+        
+        # Make a copy to avoid modifying the input (only clone tensors)
+        pretrained_state = {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in pretrained_state.items()}
         
         # Apply task vector to each parameter
         result_state = {}
@@ -443,10 +478,10 @@ class QuantizedTaskVector:
         if isinstance(pretrained_checkpoint, str):
             pretrained_state = torch.load(pretrained_checkpoint, map_location='cpu', weights_only=False)
         else:
-            pretrained_state = pretrained_checkpoint.copy()
+            pretrained_state = pretrained_checkpoint
         
-        if "state_dict" in pretrained_state:
-            pretrained_state = pretrained_state["state_dict"]
+        # Extract state dict from various checkpoint formats including torch.nn.Module objects
+        pretrained_state = _extract_state_dict(pretrained_state)
         
         # Dequantize the task vector
         vector = self.dequantize()
@@ -492,8 +527,8 @@ class QuantizedFinetunedModel:
         else:
             finetuned_state = finetuned_checkpoint
         
-        if "state_dict" in finetuned_state:
-            finetuned_state = finetuned_state["state_dict"]
+        # Extract state dict from various checkpoint formats including torch.nn.Module objects
+        finetuned_state = _extract_state_dict(finetuned_state)
         
         self.quantized_weights = {}
         self.qbit = qbit
@@ -562,8 +597,8 @@ class QuantizedFinetunedModel:
         else:
             pretrained_state = pretrained_checkpoint
         
-        if "state_dict" in pretrained_state:
-            pretrained_state = pretrained_state["state_dict"]
+        # Extract state dict from various checkpoint formats including torch.nn.Module objects
+        pretrained_state = _extract_state_dict(pretrained_state)
         
         finetuned_state = self.dequantize()
         
@@ -610,8 +645,8 @@ class QuantizedBaseAndTaskVector:
         else:
             pretrained_state = pretrained_checkpoint
         
-        if "state_dict" in pretrained_state:
-            pretrained_state = pretrained_state["state_dict"]
+        # Extract state dict from various checkpoint formats including torch.nn.Module objects
+        pretrained_state = _extract_state_dict(pretrained_state)
         
         # Get task vector dict
         if isinstance(task_vector, TaskVector):

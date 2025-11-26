@@ -285,5 +285,205 @@ def test_task_vector_from_files():
         assert torch.allclose(tv.vector["weight"], expected_delta)
 
 
+def test_task_vector_from_model_object():
+    """Test creating TaskVector when checkpoint contains a torch.nn.Module object.
+    
+    This tests the fix for "argument of type 'ImageEncoder' is not iterable" error
+    by passing a torch.nn.Module directly (simulating what happens when
+    torch.load() returns a full model object).
+    """
+    # Create a simple model class to simulate ImageEncoder
+    class SimpleModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layer1 = torch.nn.Linear(10, 5)
+            self.layer2 = torch.nn.Linear(5, 2)
+    
+    # Create pretrained model
+    pretrained_model = SimpleModel()
+    
+    # Create finetuned model with same initial weights as pretrained
+    finetuned_model = SimpleModel()
+    finetuned_model.load_state_dict(pretrained_model.state_dict())
+    
+    # Modify finetuned model weights slightly
+    with torch.no_grad():
+        for name, param in finetuned_model.named_parameters():
+            param.add_(0.5)  # Add 0.5 to all parameters
+    
+    # Create task vector directly from model objects
+    # This should work now - previously would fail with 
+    # "argument of type 'SimpleModel' is not iterable"
+    tv = task_vectors.TaskVector(pretrained_model, finetuned_model)
+    
+    # Verify task vector contains the expected keys
+    assert "layer1.weight" in tv.vector
+    assert "layer1.bias" in tv.vector
+    assert "layer2.weight" in tv.vector
+    assert "layer2.bias" in tv.vector
+    
+    # The delta should be approximately 0.5 for all parameters
+    for key, delta in tv.vector.items():
+        assert torch.allclose(delta, torch.full_like(delta, 0.5), atol=1e-6)
+
+
+def test_task_vector_apply_to_model_object():
+    """Test applying TaskVector to a torch.nn.Module object directly."""
+    
+    class SimpleModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(3, 3, bias=False)
+            torch.nn.init.zeros_(self.linear.weight)
+    
+    pretrained_model = SimpleModel()
+    finetuned_model = SimpleModel()
+    
+    with torch.no_grad():
+        finetuned_model.linear.weight.fill_(2.0)
+    
+    # Create task vector from model objects
+    tv = task_vectors.TaskVector(pretrained_model, finetuned_model)
+    
+    # Apply task vector to pretrained model object (not state dict)
+    result = tv.apply_to(pretrained_model)
+    
+    # Should recover the finetuned weights
+    expected = torch.full((3, 3), 2.0)
+    assert torch.allclose(result["linear.weight"], expected)
+
+
+def test_task_vector_with_saved_model_file():
+    """Test TaskVector with checkpoint files containing torch.nn.Module objects.
+    
+    This simulates the real-world scenario where finetune.pt contains a full
+    model object (like ImageEncoder) rather than just a state dict.
+    """
+    # Create models using Sequential (which can be pickled unlike local classes)
+    pretrained_model = torch.nn.Sequential(
+        torch.nn.Linear(512, 256),
+        torch.nn.ReLU(),
+        torch.nn.Linear(256, 100)
+    )
+    
+    finetuned_model = torch.nn.Sequential(
+        torch.nn.Linear(512, 256),
+        torch.nn.ReLU(),
+        torch.nn.Linear(256, 100)
+    )
+    # Copy pretrained weights and add delta
+    finetuned_model.load_state_dict(pretrained_model.state_dict())
+    with torch.no_grad():
+        for param in finetuned_model.parameters():
+            param.add_(0.1)
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Save FULL MODEL OBJECTS (not state dicts) - simulates real finetune.pt
+        pretrained_path = os.path.join(tmpdir, "pretrained.pt")
+        finetuned_path = os.path.join(tmpdir, "finetune.pt")
+        
+        torch.save(pretrained_model, pretrained_path)
+        torch.save(finetuned_model, finetuned_path)
+        
+        # Create task vector from file paths - this should work now
+        # Previously would fail with "argument of type 'Sequential' is not iterable"
+        tv = task_vectors.TaskVector(pretrained_path, finetuned_path)
+        
+        # Verify task vector was created correctly
+        assert "0.weight" in tv.vector  # First Linear layer weight
+        assert "0.bias" in tv.vector    # First Linear layer bias
+        assert "2.weight" in tv.vector  # Second Linear layer weight
+        assert "2.bias" in tv.vector    # Second Linear layer bias
+        
+        # Verify delta values are approximately 0.1
+        for key, delta in tv.vector.items():
+            assert torch.allclose(delta, torch.full_like(delta, 0.1), atol=1e-6), \
+                f"Expected delta ~0.1 for {key}, got {delta.mean().item()}"
+        
+        # Test apply_to with the file path
+        result = tv.apply_to(pretrained_path)
+        
+        # Verify that applying task vector reconstructs finetuned weights
+        for key in tv.vector.keys():
+            finetuned_value = finetuned_model.state_dict()[key]
+            assert torch.allclose(result[key], finetuned_value, atol=1e-6), \
+                f"Failed to reconstruct {key}"
+
+
+def test_task_vector_with_imageencoder_like_structure():
+    """Test TaskVector with ImageEncoder-like nested model structure.
+    
+    This tests the architecture used in open_clip_torch==2.0.2 where:
+    - ImageEncoder has a .model attribute (CLIP model)
+    - CLIP model has a .visual attribute (vision encoder)
+    
+    The state_dict keys will be like 'model.visual.weight', etc.
+    """
+    # Create a model structure matching ImageEncoder from src/modeling.py
+    class MockVisualEncoder(torch.nn.Module):
+        """Simulates open_clip's visual encoder (e.g., VisualTransformer)"""
+        def __init__(self):
+            super().__init__()
+            self.conv1 = torch.nn.Conv2d(3, 64, kernel_size=3)
+            self.ln_pre = torch.nn.LayerNorm(64)
+            self.transformer = torch.nn.TransformerEncoder(
+                torch.nn.TransformerEncoderLayer(d_model=64, nhead=4, batch_first=True),
+                num_layers=2
+            )
+            self.ln_post = torch.nn.LayerNorm(64)
+            self.proj = torch.nn.Linear(64, 512)
+    
+    class MockCLIPModel(torch.nn.Module):
+        """Simulates open_clip's CLIP model"""
+        def __init__(self):
+            super().__init__()
+            self.visual = MockVisualEncoder()
+            self.logit_scale = torch.nn.Parameter(torch.ones([]))
+            
+        def encode_image(self, x):
+            return self.visual(x)
+    
+    class MockImageEncoder(torch.nn.Module):
+        """Simulates src/modeling.py ImageEncoder"""
+        def __init__(self):
+            super().__init__()
+            self.model = MockCLIPModel()
+            self.cache_dir = '/tmp'
+            
+        def forward(self, images):
+            return self.model.encode_image(images)
+    
+    # Create pretrained and finetuned encoders
+    pretrained_encoder = MockImageEncoder()
+    finetuned_encoder = MockImageEncoder()
+    
+    # Load same weights and modify
+    finetuned_encoder.load_state_dict(pretrained_encoder.state_dict())
+    with torch.no_grad():
+        for param in finetuned_encoder.parameters():
+            param.add_(0.01)
+    
+    # Create task vector - this should work with nested model structure
+    tv = task_vectors.TaskVector(pretrained_encoder, finetuned_encoder)
+    
+    # Verify keys have the nested structure
+    assert any('model.visual' in key for key in tv.vector.keys()), \
+        f"Expected nested keys like 'model.visual.*', got: {list(tv.vector.keys())[:5]}"
+    
+    # Verify deltas are correct
+    for key, delta in tv.vector.items():
+        assert torch.allclose(delta, torch.full_like(delta, 0.01), atol=1e-6), \
+            f"Expected delta ~0.01 for {key}"
+    
+    # Test apply_to
+    result = tv.apply_to(pretrained_encoder)
+    
+    # Verify reconstruction
+    for key in tv.vector.keys():
+        finetuned_value = finetuned_encoder.state_dict()[key]
+        assert torch.allclose(result[key], finetuned_value, atol=1e-6), \
+            f"Failed to reconstruct {key}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
