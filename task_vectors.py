@@ -336,8 +336,8 @@ class TaskVector:
         # Extract state dict from various checkpoint formats including torch.nn.Module objects
         pretrained_state = _extract_state_dict(pretrained_state)
         
-        # Make a copy to avoid modifying the input
-        pretrained_state = {k: v.clone() if hasattr(v, 'clone') else v for k, v in pretrained_state.items()}
+        # Make a copy to avoid modifying the input (only clone tensors)
+        pretrained_state = {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in pretrained_state.items()}
         
         # Apply task vector to each parameter
         result_state = {}
