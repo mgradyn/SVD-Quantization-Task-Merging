@@ -197,7 +197,8 @@ def load_tall_mask_file(
         remove_keys = []
     
     # Load the packed mask dictionary
-    # The original format uses torch.load even for .npy files
+    # Note: Despite the .npy extension, the original TALL mask format uses torch.save/load
+    # (not np.save/load). This is the format used by the original TALL masks paper repository.
     packed_masks = torch.load(mask_path, map_location=device, weights_only=False)
     
     # Convert from packed format to state dicts
@@ -208,9 +209,11 @@ def load_tall_mask_file(
         # np.unpackbits converts back to uint8 array of 0s and 1s
         if isinstance(packed_mask, np.ndarray):
             unpacked = np.unpackbits(packed_mask)
+        elif isinstance(packed_mask, torch.Tensor):
+            # Handle torch tensor - move to CPU before converting to numpy
+            unpacked = np.unpackbits(packed_mask.cpu().numpy())
         else:
-            # Handle case where it's already a torch tensor
-            unpacked = np.unpackbits(packed_mask.numpy())
+            raise TypeError(f"Unexpected type for packed_mask: {type(packed_mask)}")
         
         # Convert to torch tensor
         mask_vector = torch.from_numpy(unpacked).to(device)

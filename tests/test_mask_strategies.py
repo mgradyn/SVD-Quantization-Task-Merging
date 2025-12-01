@@ -364,6 +364,8 @@ def test_load_tall_mask_file():
     }
     
     # Save to temp file
+    # Note: Using torch.save with .npy extension matches the original TALL masks format
+    # (the original paper's code uses torch.save/load despite the .npy extension)
     with tempfile.TemporaryDirectory() as tmpdir:
         mask_path = os.path.join(tmpdir, "TALL_mask_2task.npy")
         torch.save(packed_masks, mask_path)
