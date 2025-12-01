@@ -67,6 +67,7 @@ from .diagnostics import compute_all_diagnostics, print_diagnostics_summary
 from .weighting import compute_weights
 from .clustering import cluster_tasks
 from .mask_loader import apply_mask_to_tensor, get_unmasked_portion
+from .task_vector_loader import load_checkpoint
 
 
 def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
