@@ -57,8 +57,10 @@ SVD-Hybrid can optionally process both regions separately.
 import torch
 import numpy as np
 import os
+import copy
 from typing import Dict, List, Optional, Union
 from pathlib import Path
+from collections import OrderedDict
 
 
 def state_dict_to_vector(
@@ -103,60 +105,22 @@ def state_dict_to_vector(
     return torch.cat(flat_tensors)
 
 
-def vector_to_state_dict(
-    vector: torch.Tensor,
-    reference_state_dict: Dict[str, torch.Tensor],
-    remove_keys: Optional[List[str]] = None
-) -> Dict[str, torch.Tensor]:
-    """
-    Reconstruct a state dict from a flat vector using a reference for shapes.
-    
-    This is the inverse of state_dict_to_vector. It takes a flat vector and
-    reconstructs a state dict with the same structure as the reference.
-    
-    This is used to convert flat mask vectors from the original TALL mask format
-    back into parameter-keyed dictionaries.
-    
-    Args:
-        vector: 1D tensor containing flattened parameters
-        reference_state_dict: A state dict with the target structure and shapes
-        remove_keys: Keys that were removed during flattening (should match)
-        
-    Returns:
-        Dictionary mapping parameter names to reshaped tensors
-        
-    Example:
-        >>> reference = {"layer1.weight": torch.randn(10, 5), "layer1.bias": torch.randn(10)}
-        >>> vector = torch.randn(60)  # 10*5 + 10
-        >>> reconstructed = vector_to_state_dict(vector, reference)
-        >>> reconstructed["layer1.weight"].shape  # torch.Size([10, 5])
-    """
-    if remove_keys is None:
-        remove_keys = []
-    
-    # Sort keys for consistent ordering (same as state_dict_to_vector)
-    sorted_keys = sorted(reference_state_dict.keys())
-    
-    result = {}
-    offset = 0
-    
-    for key in sorted_keys:
-        if key in remove_keys:
-            continue
-        
-        ref_tensor = reference_state_dict[key]
-        num_elements = ref_tensor.numel()
-        
-        # Extract slice from vector
-        slice_values = vector[offset:offset + num_elements]
-        
-        # Reshape to match reference shape
-        result[key] = slice_values.reshape(ref_tensor.shape)
-        
-        offset += num_elements
-    
-    return result
+def vector_to_state_dict(vector, reference_state_dict, remove_keys: Optional[List[str]] = None):
+    # create a reference dict to define the order of the vector
+    reference_dict = copy.deepcopy(state_dict)
+    for key in remove_keys:
+        if key in reference_dict:
+            del reference_dict[key]
+    sorted_reference_dict = OrderedDict(sorted(reference_dict.items()))
 
+    # create a shared state dict using the refence dict
+    torch.nn.utils.vector_to_parameters(vector, sorted_reference_dict.values())
+
+    # add back the encoder and decoder embedding weights.
+    if "transformer.shared.weight" in sorted_reference_dict:
+        for key in remove_keys:
+            sorted_reference_dict[key] = sorted_reference_dict["transformer.shared.weight"]
+    return sorted_reference_dict
 
 def load_tall_mask_file(
     mask_path: str,
