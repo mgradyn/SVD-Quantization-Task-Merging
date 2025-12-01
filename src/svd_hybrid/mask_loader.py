@@ -55,9 +55,188 @@ SVD-Hybrid can optionally process both regions separately.
 """
 
 import torch
+import numpy as np
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 from pathlib import Path
+
+
+def state_dict_to_vector(
+    state_dict: Dict[str, torch.Tensor],
+    remove_keys: Optional[List[str]] = None
+) -> torch.Tensor:
+    """
+    Flatten a state dict into a single 1D vector.
+    
+    This is a utility function for converting model state dicts or mask dicts
+    into flat vectors, which is useful for storage and comparison operations.
+    
+    Args:
+        state_dict: Dictionary mapping parameter names to tensors
+        remove_keys: Optional list of keys to skip (e.g., non-learnable buffers)
+        
+    Returns:
+        1D tensor containing all flattened parameters concatenated
+        
+    Example:
+        >>> state_dict = {"layer1.weight": torch.randn(10, 5), "layer1.bias": torch.randn(10)}
+        >>> vector = state_dict_to_vector(state_dict)
+        >>> vector.shape  # torch.Size([60])  # 10*5 + 10
+    """
+    if remove_keys is None:
+        remove_keys = []
+    
+    # Sort keys for consistent ordering
+    sorted_keys = sorted(state_dict.keys())
+    
+    # Flatten and concatenate all tensors
+    flat_tensors = []
+    for key in sorted_keys:
+        if key in remove_keys:
+            continue
+        tensor = state_dict[key]
+        flat_tensors.append(tensor.flatten())
+    
+    if not flat_tensors:
+        return torch.tensor([])
+    
+    return torch.cat(flat_tensors)
+
+
+def vector_to_state_dict(
+    vector: torch.Tensor,
+    reference_state_dict: Dict[str, torch.Tensor],
+    remove_keys: Optional[List[str]] = None
+) -> Dict[str, torch.Tensor]:
+    """
+    Reconstruct a state dict from a flat vector using a reference for shapes.
+    
+    This is the inverse of state_dict_to_vector. It takes a flat vector and
+    reconstructs a state dict with the same structure as the reference.
+    
+    This is used to convert flat mask vectors from the original TALL mask format
+    back into parameter-keyed dictionaries.
+    
+    Args:
+        vector: 1D tensor containing flattened parameters
+        reference_state_dict: A state dict with the target structure and shapes
+        remove_keys: Keys that were removed during flattening (should match)
+        
+    Returns:
+        Dictionary mapping parameter names to reshaped tensors
+        
+    Example:
+        >>> reference = {"layer1.weight": torch.randn(10, 5), "layer1.bias": torch.randn(10)}
+        >>> vector = torch.randn(60)  # 10*5 + 10
+        >>> reconstructed = vector_to_state_dict(vector, reference)
+        >>> reconstructed["layer1.weight"].shape  # torch.Size([10, 5])
+    """
+    if remove_keys is None:
+        remove_keys = []
+    
+    # Sort keys for consistent ordering (same as state_dict_to_vector)
+    sorted_keys = sorted(reference_state_dict.keys())
+    
+    result = {}
+    offset = 0
+    
+    for key in sorted_keys:
+        if key in remove_keys:
+            continue
+        
+        ref_tensor = reference_state_dict[key]
+        num_elements = ref_tensor.numel()
+        
+        # Extract slice from vector
+        slice_values = vector[offset:offset + num_elements]
+        
+        # Reshape to match reference shape
+        result[key] = slice_values.reshape(ref_tensor.shape)
+        
+        offset += num_elements
+    
+    return result
+
+
+def load_tall_mask_file(
+    mask_path: str,
+    reference_state_dict: Dict[str, torch.Tensor],
+    remove_keys: Optional[List[str]] = None,
+    device: str = "cpu"
+) -> Dict[str, Dict[str, torch.Tensor]]:
+    """
+    Load TALL masks from the original format (single .npy file with packed bits).
+    
+    The original TALL mask format stores all task masks in a single file:
+    - File format: .npy file loaded with torch.load() 
+    - Structure: Dictionary with task names as keys
+    - Values: Packed bit arrays (via np.packbits) for each task's mask
+    
+    The 8 standard tasks are: Cars, DTD, EuroSAT, GTSRB, MNIST, RESISC45, SUN397, SVHN
+    
+    Args:
+        mask_path: Path to the TALL mask file (e.g., "TALL_mask_8task.npy")
+        reference_state_dict: A model state dict used to determine parameter shapes
+                             for converting flat vectors back to state dicts
+        remove_keys: Keys to exclude when reconstructing state dicts
+        device: Device to load masks to
+        
+    Returns:
+        Dictionary mapping task_name -> parameter_name -> boolean mask tensor
+        
+    Example:
+        >>> base_state = torch.load("base_model.pt")
+        >>> masks = load_tall_mask_file("TALL_mask_8task.npy", base_state)
+        >>> masks["Cars"]["layer1.weight"].shape
+        torch.Size([512, 1024])
+    """
+    if not os.path.exists(mask_path):
+        raise FileNotFoundError(f"TALL mask file not found: {mask_path}")
+    
+    if remove_keys is None:
+        remove_keys = []
+    
+    # Load the packed mask dictionary
+    # The original format uses torch.load even for .npy files
+    packed_masks = torch.load(mask_path, map_location=device, weights_only=False)
+    
+    # Convert from packed format to state dicts
+    task_masks = {}
+    
+    for task_name, packed_mask in packed_masks.items():
+        # Unpack the bits: np.packbits was used to compress the boolean mask
+        # np.unpackbits converts back to uint8 array of 0s and 1s
+        if isinstance(packed_mask, np.ndarray):
+            unpacked = np.unpackbits(packed_mask)
+        else:
+            # Handle case where it's already a torch tensor
+            unpacked = np.unpackbits(packed_mask.numpy())
+        
+        # Convert to torch tensor
+        mask_vector = torch.from_numpy(unpacked).to(device)
+        
+        # Calculate expected length from reference state dict
+        expected_length = sum(
+            v.numel() for k, v in reference_state_dict.items() 
+            if k not in remove_keys
+        )
+        
+        # Trim to expected length (packbits pads to multiple of 8)
+        mask_vector = mask_vector[:expected_length]
+        
+        # Convert flat vector to state dict format
+        mask_state_dict = vector_to_state_dict(
+            mask_vector, 
+            reference_state_dict, 
+            remove_keys=remove_keys
+        )
+        
+        # Ensure boolean dtype
+        mask_state_dict = {k: v.bool() for k, v in mask_state_dict.items()}
+        
+        task_masks[task_name] = mask_state_dict
+    
+    return task_masks
 
 
 def load_single_mask(mask_path: str, device: str = "cpu") -> Dict[str, torch.Tensor]:
@@ -93,14 +272,27 @@ def load_single_mask(mask_path: str, device: str = "cpu") -> Dict[str, torch.Ten
     return mask_dict
 
 
-def load_task_masks(mask_dir: str, task_names: List[str], device: str = "cpu") -> Dict[str, Dict[str, torch.Tensor]]:
+def load_task_masks(
+    mask_dir: str,
+    task_names: List[str],
+    device: str = "cpu",
+    reference_state_dict: Optional[Dict[str, torch.Tensor]] = None,
+    remove_keys: Optional[List[str]] = None
+) -> Dict[str, Dict[str, torch.Tensor]]:
     """
     Load masks for multiple tasks.
     
-    Searches for mask files using common naming conventions:
-    - {task_name}_mask.pt (e.g., "Cars_mask.pt")
-    - {task_name}.pt (e.g., "Cars.pt")
-    - {task_name}/mask.pt (e.g., "Cars/mask.pt")
+    Supports two mask formats:
+    
+    1. **Original TALL mask format** (preferred when reference_state_dict provided):
+       - Single file containing all task masks: TALL_mask_{n}task.npy
+       - Masks are packed bits that need unpacking with np.unpackbits
+       - Requires reference_state_dict to reconstruct parameter shapes
+    
+    2. **Individual mask files**:
+       - {task_name}_mask.pt (e.g., "Cars_mask.pt")
+       - {task_name}.pt (e.g., "Cars.pt")
+       - {task_name}/mask.pt (e.g., "Cars/mask.pt")
     
     If no mask is found for a task, a warning is printed and None is stored.
     
@@ -108,18 +300,63 @@ def load_task_masks(mask_dir: str, task_names: List[str], device: str = "cpu") -
         mask_dir: Directory containing mask files
         task_names: List of task identifiers to load
         device: Device to load masks to
+        reference_state_dict: A model state dict for shape reference when loading
+                             the original TALL mask format. If None, only individual
+                             mask files will be searched.
+        remove_keys: Keys to exclude when loading TALL format masks
         
     Returns:
         Dictionary mapping task_name -> parameter_name -> boolean mask
         Tasks without masks have None as their value
         
     Example:
+        >>> # Load with individual mask files
         >>> masks = load_task_masks("./masks", ["Cars", "DTD", "EuroSAT"])
         >>> masks["Cars"]["layer1.weight"].shape
         torch.Size([512, 1024])
+        
+        >>> # Load from original TALL mask format
+        >>> base_state = torch.load("base_model.pt")
+        >>> masks = load_task_masks("./masks", ["Cars", "DTD"], reference_state_dict=base_state)
     """
     task_masks = {}
+    num_tasks = len(task_names)
     
+    # First, try to find the combined TALL mask file
+    tall_mask_paths = [
+        os.path.join(mask_dir, f"TALL_mask_{num_tasks}task.npy"),
+        os.path.join(mask_dir, f"TALL_mask_{num_tasks}tasks.npy"),
+        os.path.join(mask_dir, f"tall_mask_{num_tasks}task.npy"),
+        os.path.join(mask_dir, f"tall_mask_{num_tasks}tasks.npy"),
+    ]
+    
+    tall_mask_file = None
+    for path in tall_mask_paths:
+        if os.path.exists(path):
+            tall_mask_file = path
+            break
+    
+    if tall_mask_file is not None and reference_state_dict is not None:
+        # Load using original TALL mask format
+        print(f"Loading TALL masks from: {tall_mask_file}")
+        all_task_masks = load_tall_mask_file(
+            tall_mask_file,
+            reference_state_dict,
+            remove_keys=remove_keys,
+            device=device
+        )
+        
+        # Extract only the requested tasks
+        for task_name in task_names:
+            if task_name in all_task_masks:
+                task_masks[task_name] = all_task_masks[task_name]
+            else:
+                print(f"Warning: Task {task_name} not found in TALL mask file")
+                task_masks[task_name] = None
+        
+        return task_masks
+    
+    # Fall back to individual mask files
     for task_name in task_names:
         # Try various naming conventions
         possible_paths = [

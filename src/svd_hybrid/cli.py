@@ -121,7 +121,14 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
     # Step 2: Load and combine masks
     print("\n[Step 2/9] Loading and combining masks...")
     if config.mask_dir and os.path.exists(config.mask_dir):
-        task_masks = load_task_masks(config.mask_dir, config.tasks, device=device)
+        # Load base model state dict to use as reference for TALL mask format
+        base_state_dict = load_checkpoint(config.base_model_path, device=device)
+        task_masks = load_task_masks(
+            config.mask_dir, 
+            config.tasks, 
+            device=device,
+            reference_state_dict=base_state_dict
+        )
         combined_masks = combine_masks(task_masks, strategy=config.svd_mask_strategy, device=device)
         print(f"Combined masks using strategy: {config.svd_mask_strategy}")
     else:
