@@ -2,8 +2,17 @@
 Tests for mask combination strategies (union, intersection, majority).
 """
 import torch
+import numpy as np
 import pytest
-from src.svd_hybrid.mask_loader import combine_masks
+import os
+import tempfile
+from src.svd_hybrid.mask_loader import (
+    combine_masks, 
+    state_dict_to_vector, 
+    vector_to_state_dict,
+    load_tall_mask_file,
+    load_task_masks
+)
 
 
 def test_union_strategy():
@@ -246,6 +255,221 @@ def test_all_true_masks():
     for strategy in ["union", "intersection", "majority"]:
         combined = combine_masks(task_masks, strategy=strategy)
         assert combined["param"].sum().item() == 10
+
+
+# ==================== Tests for state_dict/vector conversion ====================
+
+def test_state_dict_to_vector_basic():
+    """Test basic state dict to vector conversion."""
+    state_dict = {
+        "layer1.weight": torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
+        "layer1.bias": torch.tensor([5.0, 6.0])
+    }
+    
+    vector = state_dict_to_vector(state_dict)
+    
+    # Should have 4 + 2 = 6 elements
+    assert vector.shape == torch.Size([6])
+
+
+def test_state_dict_to_vector_with_remove_keys():
+    """Test state dict to vector with excluded keys."""
+    state_dict = {
+        "layer1.weight": torch.tensor([1.0, 2.0]),
+        "layer1.bias": torch.tensor([3.0, 4.0]),
+        "running_mean": torch.tensor([5.0, 6.0])  # should be skipped
+    }
+    
+    vector = state_dict_to_vector(state_dict, remove_keys=["running_mean"])
+    
+    # Should have 2 + 2 = 4 elements (excluding running_mean)
+    assert vector.shape == torch.Size([4])
+
+
+def test_vector_to_state_dict_basic():
+    """Test basic vector to state dict reconstruction."""
+    reference = {
+        "layer1.weight": torch.randn(2, 3),
+        "layer1.bias": torch.randn(3)
+    }
+    
+    # Create a vector with correct total elements (6 + 3 = 9)
+    vector = torch.arange(9, dtype=torch.float)
+    
+    reconstructed = vector_to_state_dict(vector, reference)
+    
+    assert "layer1.weight" in reconstructed
+    assert "layer1.bias" in reconstructed
+    assert reconstructed["layer1.weight"].shape == torch.Size([2, 3])
+    assert reconstructed["layer1.bias"].shape == torch.Size([3])
+
+
+def test_state_dict_vector_roundtrip():
+    """Test that state_dict -> vector -> state_dict preserves structure."""
+    original = {
+        "encoder.layer1.weight": torch.randn(10, 5),
+        "encoder.layer1.bias": torch.randn(10),
+        "decoder.weight": torch.randn(5, 10)
+    }
+    
+    # Convert to vector
+    vector = state_dict_to_vector(original)
+    
+    # Convert back to state dict
+    reconstructed = vector_to_state_dict(vector, original)
+    
+    # Verify shapes match
+    for key in original:
+        assert key in reconstructed
+        assert reconstructed[key].shape == original[key].shape
+
+
+def test_state_dict_vector_values_preserved():
+    """Test that values are preserved during roundtrip."""
+    original = {
+        "a": torch.tensor([1.0, 2.0, 3.0]),
+        "b": torch.tensor([[4.0, 5.0], [6.0, 7.0]])
+    }
+    
+    vector = state_dict_to_vector(original)
+    reconstructed = vector_to_state_dict(vector, original)
+    
+    for key in original:
+        assert torch.allclose(reconstructed[key], original[key])
+
+
+# ==================== Tests for TALL mask file loading ====================
+
+def test_load_tall_mask_file():
+    """Test loading TALL mask from packed format."""
+    # Create a reference state dict
+    reference = {
+        "layer1.weight": torch.randn(4, 4),  # 16 elements
+        "layer1.bias": torch.randn(4)         # 4 elements
+    }
+    # Total: 20 elements
+    
+    # Create packed mask data for two tasks
+    # Task 1: first 10 True, rest False
+    mask1_flat = np.array([1]*10 + [0]*10, dtype=np.uint8)
+    mask1_packed = np.packbits(mask1_flat)
+    
+    # Task 2: alternating True/False
+    mask2_flat = np.array([1, 0]*10, dtype=np.uint8)
+    mask2_packed = np.packbits(mask2_flat)
+    
+    packed_masks = {
+        "Cars": mask1_packed,
+        "DTD": mask2_packed
+    }
+    
+    # Save to temp file
+    # Note: Using torch.save with .npy extension matches the original TALL masks format
+    # (the original paper's code uses torch.save/load despite the .npy extension)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        mask_path = os.path.join(tmpdir, "TALL_mask_2task.npy")
+        torch.save(packed_masks, mask_path)
+        
+        # Load the masks
+        task_masks = load_tall_mask_file(mask_path, reference)
+        
+        # Verify structure
+        assert "Cars" in task_masks
+        assert "DTD" in task_masks
+        assert "layer1.weight" in task_masks["Cars"]
+        assert "layer1.bias" in task_masks["Cars"]
+        
+        # Verify dtypes are bool
+        assert task_masks["Cars"]["layer1.weight"].dtype == torch.bool
+        assert task_masks["DTD"]["layer1.bias"].dtype == torch.bool
+
+
+def test_load_task_masks_with_tall_format():
+    """Test load_task_masks finds and loads TALL mask format."""
+    # Create reference state dict
+    reference = {
+        "param": torch.randn(8)  # 8 elements
+    }
+    
+    # Create packed masks
+    mask1 = np.packbits(np.array([1, 0, 1, 0, 1, 0, 1, 0], dtype=np.uint8))
+    mask2 = np.packbits(np.array([0, 1, 0, 1, 0, 1, 0, 1], dtype=np.uint8))
+    
+    packed_masks = {
+        "Task1": mask1,
+        "Task2": mask2
+    }
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Save as TALL mask format
+        mask_path = os.path.join(tmpdir, "TALL_mask_2task.npy")
+        torch.save(packed_masks, mask_path)
+        
+        # Load using load_task_masks
+        task_masks = load_task_masks(
+            tmpdir,
+            ["Task1", "Task2"],
+            reference_state_dict=reference
+        )
+        
+        assert "Task1" in task_masks
+        assert "Task2" in task_masks
+        assert task_masks["Task1"]["param"].shape == torch.Size([8])
+
+
+def test_load_task_masks_fallback_to_individual():
+    """Test load_task_masks falls back to individual files when TALL not found."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create individual mask files
+        mask1 = {"param": torch.tensor([True, False, True])}
+        mask2 = {"param": torch.tensor([False, True, False])}
+        
+        torch.save(mask1, os.path.join(tmpdir, "Task1_mask.pt"))
+        torch.save(mask2, os.path.join(tmpdir, "Task2_mask.pt"))
+        
+        # Load without reference_state_dict (should use individual files)
+        task_masks = load_task_masks(tmpdir, ["Task1", "Task2"])
+        
+        assert "Task1" in task_masks
+        assert "Task2" in task_masks
+        assert torch.equal(task_masks["Task1"]["param"], mask1["param"])
+        assert torch.equal(task_masks["Task2"]["param"], mask2["param"])
+
+
+def test_load_tall_mask_8_tasks():
+    """Test loading TALL mask with 8 standard tasks."""
+    # Standard 8 tasks
+    tasks = ["Cars", "DTD", "EuroSAT", "GTSRB", "MNIST", "RESISC45", "SUN397", "SVHN"]
+    
+    # Create reference state dict
+    reference = {
+        "encoder.weight": torch.randn(8, 8),  # 64 elements
+        "encoder.bias": torch.randn(8)         # 8 elements
+    }
+    # Total: 72 elements
+    
+    # Create packed masks for all 8 tasks
+    packed_masks = {}
+    for i, task in enumerate(tasks):
+        # Each task has a different mask pattern
+        mask = np.array([(j % (i + 1) == 0) for j in range(72)], dtype=np.uint8)
+        packed_masks[task] = np.packbits(mask)
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        mask_path = os.path.join(tmpdir, "TALL_mask_8task.npy")
+        torch.save(packed_masks, mask_path)
+        
+        # Load the masks
+        task_masks = load_tall_mask_file(mask_path, reference)
+        
+        # Verify all 8 tasks are loaded
+        assert len(task_masks) == 8
+        for task in tasks:
+            assert task in task_masks
+            assert "encoder.weight" in task_masks[task]
+            assert "encoder.bias" in task_masks[task]
+            assert task_masks[task]["encoder.weight"].shape == torch.Size([8, 8])
+            assert task_masks[task]["encoder.bias"].shape == torch.Size([8])
 
 
 if __name__ == "__main__":

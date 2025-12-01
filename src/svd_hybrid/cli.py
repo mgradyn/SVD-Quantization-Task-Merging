@@ -108,6 +108,10 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
     device = config.device if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
     
+    # Load base model state dict (used for mask loading and final merging)
+    print("\nLoading base model...")
+    base_state_dict = load_checkpoint(config.base_model_path, device=device)
+    
     # Step 1: Load task vectors
     print("\n[Step 1/9] Loading task vectors...")
     task_checkpoint_paths = get_task_checkpoint_paths(config.checkpoint_dir, config.tasks)
@@ -121,7 +125,12 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
     # Step 2: Load and combine masks
     print("\n[Step 2/9] Loading and combining masks...")
     if config.mask_dir and os.path.exists(config.mask_dir):
-        task_masks = load_task_masks(config.mask_dir, config.tasks, device=device)
+        task_masks = load_task_masks(
+            config.mask_dir, 
+            config.tasks, 
+            device=device,
+            reference_state_dict=base_state_dict
+        )
         combined_masks = combine_masks(task_masks, strategy=config.svd_mask_strategy, device=device)
         print(f"Combined masks using strategy: {config.svd_mask_strategy}")
     else:
@@ -258,9 +267,12 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
     
     # Step 8: Apply to base model
     print("\n[Step 8/9] Creating merged model...")
-    from .task_vector_loader import load_checkpoint
-    base_state_dict = load_checkpoint(config.base_model_path, device=device)
-    merged_state_dict = apply_merged_deltas(base_state_dict, merged_deltas, device=device)
+    # Reuse base_state_dict loaded at the start (make a copy to avoid modifying original)
+    merged_state_dict = apply_merged_deltas(
+        {k: v.clone() for k, v in base_state_dict.items()}, 
+        merged_deltas, 
+        device=device
+    )
     print("Merged model created")
     
     # Step 9: Compute diagnostics
