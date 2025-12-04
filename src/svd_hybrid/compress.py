@@ -104,30 +104,41 @@ def compress_single_task(
     U_high: torch.Tensor,
     U_low: torch.Tensor,
     quantizer: RTVQQuantizer,
-    device: str = "cpu"
+    device: str = "cpu",
+    mean: Optional[torch.Tensor] = None
 ) -> Dict:
     """
     Compress a single task's delta vector.
     
     Performs the full compression pipeline for one task:
-    1. Project delta to basis coefficients
-    2. Store high-energy coefficients in FP16
-    3. Quantize low-energy coefficients with RTVQ
+    1. Subtract mean if provided (centering for correct projection)
+    2. Project delta to basis coefficients
+    3. Store high-energy coefficients in FP16
+    4. Quantize low-energy coefficients with RTVQ
     
     Args:
         task_delta: Task delta vector [D]
         U_high: High-energy basis [D × k]
-        U_low: Low-energy basis [D × (D-k)]
+        U_low: Low-energy basis [D × (N-k)] where N is the number of tasks
         quantizer: RTVQ quantizer instance
         device: Device for computation
+        mean: Optional mean vector [D] or [D × 1] to subtract before projection.
+            If the SVD basis was constructed with centering (svd_center=True),
+            this mean must be provided for correct reconstruction.
         
     Returns:
         Compression artifact dictionary containing:
             - c_high_fp16: High-energy coefficients in FP16 [k]
             - c_low_quant: Quantized low-energy coefficients (RTVQ payload)
     """
-    # Step 1: Project delta to coefficient space
-    c_high, c_low = project_to_basis(task_delta, U_high, U_low)
+    # Step 0: Subtract mean if provided (for centered SVD basis)
+    delta_to_project = task_delta
+    if mean is not None:
+        mean_vec = mean.squeeze()  # Handle both [D] and [D x 1] shapes
+        delta_to_project = task_delta - mean_vec
+    
+    # Step 1: Project (centered) delta to coefficient space
+    c_high, c_low = project_to_basis(delta_to_project, U_high, U_low)
     
     # Step 2: Store c_high in FP16 (half precision)
     # This preserves accuracy for important coefficients while halving memory
@@ -160,8 +171,8 @@ def compress_masked_regions(
     Args:
         task_deltas_masked: Dictionary mapping task_name -> masked delta
         task_deltas_unmasked: Dictionary mapping task_name -> unmasked delta (optional)
-        basis_masked: Masked basis dictionary
-        basis_unmasked: Unmasked basis dictionary (optional)
+        basis_masked: Masked basis dictionary (may contain "mean" if centering was used)
+        basis_unmasked: Unmasked basis dictionary (optional, may contain "mean")
         quantizer: RTVQ quantizer
         device: Device for computation
         
@@ -169,6 +180,10 @@ def compress_masked_regions(
         Dictionary mapping task_name -> compression artifacts
     """
     compressed_tasks = {}
+    
+    # Extract mean vectors if present (for centered SVD basis)
+    mean_masked = basis_masked.get("mean") if basis_masked is not None else None
+    mean_unmasked = basis_unmasked.get("mean") if basis_unmasked is not None else None
     
     for task_name in task_deltas_masked.keys():
         artifact = {}
@@ -180,7 +195,8 @@ def compress_masked_regions(
                 basis_masked["U_high"],
                 basis_masked["U_low"],
                 quantizer,
-                device
+                device,
+                mean=mean_masked
             )
             artifact["masked"] = masked_artifact
         else:
@@ -197,7 +213,8 @@ def compress_masked_regions(
                 basis_unmasked["U_high"],
                 basis_unmasked["U_low"],
                 quantizer,
-                device
+                device,
+                mean=mean_unmasked
             )
             artifact["unmasked"] = unmasked_artifact
         else:
