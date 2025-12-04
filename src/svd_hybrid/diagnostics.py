@@ -62,8 +62,11 @@ and merging. Good diagnostics help you:
 
 import torch
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 from .rtvq import RTVQQuantizer, estimate_compression_ratio
+
+if TYPE_CHECKING:
+    from .config import SVDHybridConfig
 
 
 def compute_reconstruction_error(
@@ -377,6 +380,332 @@ def compute_coefficient_histograms(
             "max": float(np.max(np.abs(c_low_cat)))
         }
     }
+
+
+def compute_compression_statistics(
+    task_vectors: Dict[str, Dict[str, torch.Tensor]],
+    compressed_all: Dict[str, Dict[str, Dict]],
+    bases: Dict[str, Dict],
+    config: "SVDHybridConfig"
+) -> Dict:
+    """
+    Compute detailed compression statistics for scientific logging.
+    
+    This function analyzes the compression pipeline and produces detailed
+    statistics showing before/after sizes, compression ratios per component,
+    and which parts use FP16 vs quantized storage.
+    
+    === COMPRESSION COMPONENTS ===
+    
+    1. **High-energy coefficients (FP16)**:
+       - First k coefficients per task
+       - Stored in half-precision (16 bits = 2 bytes per value)
+       - These capture the most important signal
+    
+    2. **Low-energy coefficients (RTVQ quantized)**:
+       - Remaining D-k coefficients per task
+       - Multi-stage residual quantization (e.g., 4-bit)
+       - Each stage: indices + scale + zero_point
+    
+    3. **SVD Bases (shared across tasks)**:
+       - U_high: [D × k] matrix in FP16
+       - U_low: [D × (D-k)] matrix in FP16
+       - Amortized across all tasks
+    
+    Args:
+        task_vectors: Original task vectors
+        compressed_all: Compressed coefficients for all parameters and tasks
+        bases: SVD bases for all parameters
+        config: SVDHybridConfig
+        
+    Returns:
+        Detailed compression statistics dictionary
+    """
+    import math
+    
+    stats = {
+        "original": {
+            "total_bytes": 0,
+            "per_task_bytes": {},
+            "per_param_bytes": {}
+        },
+        "compressed": {
+            "total_bytes": 0,
+            "fp16_high_energy_bytes": 0,
+            "rtvq_low_energy_bytes": 0,
+            "svd_bases_bytes": 0,
+            "per_task_bytes": {},
+            "per_param_bytes": {}
+        },
+        "per_parameter": {},
+        "summary": {}
+    }
+    
+    num_tasks = len(task_vectors)
+    num_bits = config.svd_low_bits
+    num_stages = config.svd_rtvq_stages
+    
+    # Calculate original size
+    for task_name, tv in task_vectors.items():
+        task_bytes = sum(delta.numel() * 4 for delta in tv.values())  # FP32 = 4 bytes
+        stats["original"]["per_task_bytes"][task_name] = task_bytes
+        stats["original"]["total_bytes"] += task_bytes
+    
+    for param_name in task_vectors[list(task_vectors.keys())[0]].keys():
+        param_bytes = sum(
+            tv[param_name].numel() * 4 
+            for tv in task_vectors.values() 
+            if param_name in tv
+        )
+        stats["original"]["per_param_bytes"][param_name] = param_bytes
+    
+    # Calculate compressed size per parameter
+    total_fp16_bytes = 0
+    total_rtvq_bytes = 0
+    total_bases_bytes = 0
+    
+    for param_name, basis in bases.items():
+        if param_name not in compressed_all:
+            continue
+            
+        param_stats = {
+            "original_bytes": stats["original"]["per_param_bytes"].get(param_name, 0),
+            "compressed_bytes": 0,
+            "fp16_high_energy_bytes": 0,
+            "rtvq_low_energy_bytes": 0,
+            "svd_bases_bytes": 0,
+            "k": 0,
+            "D": 0,
+            "compression_ratio": 0
+        }
+        
+        basis_masked = basis.get("masked")
+        if basis_masked is not None:
+            k = basis_masked.get("k", 0)
+            D = basis_masked.get("D", 0)
+            param_stats["k"] = k
+            param_stats["D"] = D
+            
+            # SVD bases size (shared across tasks, amortized)
+            # U_high: [D × k] in FP16 = D * k * 2 bytes
+            # U_low: [D × (D-k)] in FP16 = D * (D-k) * 2 bytes (but often truncated)
+            u_high_numel = basis_masked.get("U_high", torch.empty(0)).numel()
+            u_low_numel = basis_masked.get("U_low", torch.empty(0)).numel()
+            bases_bytes = (u_high_numel + u_low_numel) * 2  # FP16 = 2 bytes
+            param_stats["svd_bases_bytes"] = bases_bytes
+            total_bases_bytes += bases_bytes
+            
+            # Per-task compressed coefficients
+            compressed_params = compressed_all[param_name]
+            for task_name, artifact in compressed_params.items():
+                if artifact is None or artifact.get("masked") is None:
+                    continue
+                
+                masked_artifact = artifact["masked"]
+                
+                # FP16 high-energy coefficients: k values × 2 bytes
+                c_high = masked_artifact.get("c_high_fp16", torch.empty(0))
+                fp16_bytes = c_high.numel() * 2
+                param_stats["fp16_high_energy_bytes"] += fp16_bytes
+                total_fp16_bytes += fp16_bytes
+                
+                # RTVQ low-energy coefficients
+                # Each stage: quantized indices + scale (4 bytes) + zero_point (4 bytes)
+                c_low_quant = masked_artifact.get("c_low_quant", {})
+                payloads = c_low_quant.get("payloads", [])
+                
+                rtvq_bytes = 0
+                for payload in payloads:
+                    # Quantized indices: ceil(numel * num_bits / 8) bytes
+                    q_indices = payload.get("quantized", torch.empty(0))
+                    indices_bytes = math.ceil(q_indices.numel() * num_bits / 8)
+                    # Scale and zero_point: 8 bytes per stage
+                    overhead_bytes = 8
+                    rtvq_bytes += indices_bytes + overhead_bytes
+                
+                param_stats["rtvq_low_energy_bytes"] += rtvq_bytes
+                total_rtvq_bytes += rtvq_bytes
+        
+        param_stats["compressed_bytes"] = (
+            param_stats["fp16_high_energy_bytes"] +
+            param_stats["rtvq_low_energy_bytes"] +
+            param_stats["svd_bases_bytes"]
+        )
+        
+        if param_stats["original_bytes"] > 0:
+            param_stats["compression_ratio"] = (
+                param_stats["original_bytes"] / max(param_stats["compressed_bytes"], 1)
+            )
+        
+        stats["per_parameter"][param_name] = param_stats
+        stats["compressed"]["per_param_bytes"][param_name] = param_stats["compressed_bytes"]
+    
+    # Aggregate compressed stats
+    stats["compressed"]["fp16_high_energy_bytes"] = total_fp16_bytes
+    stats["compressed"]["rtvq_low_energy_bytes"] = total_rtvq_bytes
+    stats["compressed"]["svd_bases_bytes"] = total_bases_bytes
+    stats["compressed"]["total_bytes"] = total_fp16_bytes + total_rtvq_bytes + total_bases_bytes
+    
+    # Summary statistics
+    original_total = stats["original"]["total_bytes"]
+    compressed_total = stats["compressed"]["total_bytes"]
+    
+    stats["summary"] = {
+        "original_size_mb": original_total / (1024 * 1024),
+        "compressed_size_mb": compressed_total / (1024 * 1024),
+        "overall_compression_ratio": original_total / max(compressed_total, 1),
+        "fp16_fraction": total_fp16_bytes / max(compressed_total, 1),
+        "rtvq_fraction": total_rtvq_bytes / max(compressed_total, 1),
+        "bases_fraction": total_bases_bytes / max(compressed_total, 1),
+        "num_parameters": len(stats["per_parameter"]),
+        "num_tasks": num_tasks,
+        "num_bits": num_bits,
+        "num_stages": num_stages
+    }
+    
+    return stats
+
+
+def print_detailed_compression_report(
+    compression_stats: Dict,
+    config: "SVDHybridConfig",
+    top_n_params: int = 5
+) -> None:
+    """
+    Print a detailed scientific report of compression statistics.
+    
+    Shows mathematical breakdown of compression, before/after sizes,
+    and which components use which precision.
+    
+    Args:
+        compression_stats: Statistics from compute_compression_statistics
+        config: SVDHybridConfig
+        top_n_params: Number of top parameters to show in detail
+    """
+    summary = compression_stats.get("summary", {})
+    original = compression_stats.get("original", {})
+    compressed = compression_stats.get("compressed", {})
+    per_param = compression_stats.get("per_parameter", {})
+    
+    # Pre-compute values for cleaner formatting
+    energy_pct = int(config.svd_energy_threshold * 100)
+    low_bits = config.svd_low_bits
+    rtvq_stages = config.svd_rtvq_stages
+    
+    print(f"\n{'═'*80}")
+    print(f"📊 DETAILED COMPRESSION ANALYSIS")
+    print(f"{'═'*80}")
+    
+    print(f"""
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        COMPRESSION MATHEMATICAL OVERVIEW                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  📐 SVD DECOMPOSITION:                                                       │
+│     For each parameter Δ (task vector delta):                               │
+│                                                                              │
+│     Stack N task deltas: T = [δ₁ | δ₂ | ... | δₙ]  ∈ ℝ^(D×N)               │
+│     Compute SVD: T = U × Σ × Vᵀ                                             │
+│                                                                              │
+│     Split basis by energy:                                                  │
+│       • U_high = U[:, :k]   (top k columns capturing {energy_pct}% energy)          │
+│       • U_low = U[:, k:]    (remaining columns)                             │
+│                                                                              │
+│  📦 PROJECTION (per task):                                                  │
+│     c_high = U_highᵀ × δ   →  k coefficients (high-energy)                 │
+│     c_low = U_lowᵀ × δ     →  (D-k) coefficients (low-energy)              │
+│                                                                              │
+│  🗜️ QUANTIZATION:                                                           │
+│     c_high → FP16 (16-bit float, 2 bytes/value)                            │
+│     c_low  → {low_bits}-bit RTVQ × {rtvq_stages} stages                                          │
+│                                                                              │
+│  🔄 RTVQ (Residual Task Vector Quantization):                               │
+│     Stage 1: q₁ = quantize(c_low), r₁ = c_low - dequant(q₁)                │
+│     Stage 2: q₂ = quantize(r₁), r₂ = r₁ - dequant(q₂)                      │
+│     ...                                                                      │
+│     Reconstruction: c_low ≈ dequant(q₁) + dequant(q₂) + ...                │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+""")
+    
+    print(f"""
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           SIZE COMPARISON (BEFORE vs AFTER)                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  📁 ORIGINAL (Uncompressed):                                                │
+│     Storage: FP32 (32-bit float, 4 bytes per value)                        │
+│     Total size: {original.get('total_bytes', 0) / (1024*1024):>10.4f} MB                                       │
+│     Tasks: {summary.get('num_tasks', 0)} × Parameters: {summary.get('num_parameters', 0)}                                 │
+│                                                                              │
+│  📦 COMPRESSED:                                                              │
+│     Total size: {compressed.get('total_bytes', 0) / (1024*1024):>10.4f} MB                                       │
+│     ├─ FP16 high-energy coeffs: {compressed.get('fp16_high_energy_bytes', 0) / 1024:>10.2f} KB ({summary.get('fp16_fraction', 0)*100:>5.1f}%)     │
+│     ├─ {config.svd_low_bits}-bit RTVQ low-energy:   {compressed.get('rtvq_low_energy_bytes', 0) / 1024:>10.2f} KB ({summary.get('rtvq_fraction', 0)*100:>5.1f}%)     │
+│     └─ SVD bases (shared):     {compressed.get('svd_bases_bytes', 0) / 1024:>10.2f} KB ({summary.get('bases_fraction', 0)*100:>5.1f}%)     │
+│                                                                              │
+│  📈 COMPRESSION RATIO: {summary.get('overall_compression_ratio', 0):>6.2f}x                                        │
+│     (Original / Compressed = {original.get('total_bytes', 0) / (1024*1024):.4f} MB / {compressed.get('total_bytes', 0) / (1024*1024):.4f} MB)                  │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+""")
+    
+    print(f"""
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           PRECISION BREAKDOWN BY COMPONENT                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  Component              │ Precision │ Bytes/Value │ Purpose                  │
+│  ───────────────────────┼───────────┼─────────────┼─────────────────────────│
+│  Original task vectors  │ FP32      │ 4.00        │ Full precision input    │
+│  High-energy coeffs     │ FP16      │ 2.00        │ Important signal (top k)│
+│  Low-energy coeffs      │ {config.svd_low_bits}-bit     │ {config.svd_low_bits/8:.2f}        │ Less important (D-k)    │
+│  SVD bases (U_high)     │ FP16      │ 2.00        │ Shared projection basis │
+│  SVD bases (U_low)      │ FP16      │ 2.00        │ Shared projection basis │
+│                                                                              │
+│  Note: {config.svd_low_bits}-bit RTVQ with {config.svd_rtvq_stages} stages uses {config.svd_low_bits}×{config.svd_rtvq_stages}={config.svd_low_bits*config.svd_rtvq_stages} bits effective per value          │
+│        plus small overhead for scale/zero_point per stage                   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+""")
+    
+    # Per-parameter breakdown (top N by original size)
+    if per_param:
+        sorted_params = sorted(
+            per_param.items(),
+            key=lambda x: x[1].get("original_bytes", 0),
+            reverse=True
+        )[:top_n_params]
+        
+        print(f"""
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      TOP {top_n_params} PARAMETERS BY SIZE (DETAILED BREAKDOWN)                │
+├─────────────────────────────────────────────────────────────────────────────┤""")
+        
+        for param_name, pstats in sorted_params:
+            orig_kb = pstats.get("original_bytes", 0) / 1024
+            comp_kb = pstats.get("compressed_bytes", 0) / 1024
+            ratio = pstats.get("compression_ratio", 0)
+            k = pstats.get("k", 0)
+            D = pstats.get("D", 0)
+            fp16_kb = pstats.get("fp16_high_energy_bytes", 0) / 1024
+            rtvq_kb = pstats.get("rtvq_low_energy_bytes", 0) / 1024
+            
+            # Truncate long parameter names
+            display_name = param_name[:50] + "..." if len(param_name) > 50 else param_name
+            
+            print(f"""│                                                                              │
+│  📍 {display_name:<55}│
+│     Original: {orig_kb:>8.2f} KB → Compressed: {comp_kb:>8.2f} KB ({ratio:>5.2f}x)       │
+│     SVD rank k={k}, dimension D={D:,}                                       │
+│     ├─ FP16 high-energy: {fp16_kb:>8.2f} KB (top {k} coefficients)             │
+│     └─ {config.svd_low_bits}-bit RTVQ:        {rtvq_kb:>8.2f} KB (remaining {D-k if D > k else 0} coefficients)     │""")
+        
+        print(f"""│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+""")
+    
+    print(f"{'═'*80}\n")
 
 
 def print_diagnostics_summary(diagnostics: Dict):
