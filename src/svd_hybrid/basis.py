@@ -295,7 +295,7 @@ def construct_basis(
     sv = S.cpu().numpy()
     energy = sv**2
     cum = energy.cumsum() / energy.sum() if energy.sum() > 0 else np.ones_like(energy)
-    print("param_name:", param_name, "shape DxN:", D, "x", N)
+    print("shape DxN:", D, "x", N)
     print("singular values:", sv)
     print("cumulative energy:", cum)
     print("selected k:", select_rank(S, energy_threshold=0.95, max_rank=max_rank))
