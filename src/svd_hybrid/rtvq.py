@@ -168,7 +168,8 @@ def asymmetric_dequantization(
 def multistage_residual_quantization(
     tensor: torch.Tensor,
     num_bits: int = 4,
-    num_stages: int = 2
+    num_stages: int = 2,
+    verbose: bool = False
 ) -> List[Dict]:
     """
     Multi-stage residual quantization.
@@ -204,6 +205,7 @@ def multistage_residual_quantization(
         tensor: Input tensor to quantize
         num_bits: Number of bits per stage (e.g., 4)
         num_stages: Number of refinement stages (e.g., 2)
+        verbose: Print tutorial-style progress messages
         
     Returns:
         List of quantization payloads, one per stage
@@ -216,20 +218,55 @@ def multistage_residual_quantization(
         >>> payloads[0].keys()
         dict_keys(['stage', 'quantized', 'scale', 'zero_point', 'residual_norm'])
     """
+    if verbose:
+        print(f"\n{'─'*60}")
+        print(f"🔬 RTVQ: Residual Task Vector Quantization")
+        print(f"{'─'*60}")
+        print(f"""
+   🎯 WHAT IS RTVQ?
+      RTVQ quantizes data in multiple stages to reduce error.
+      
+      Stage 1: Quantize original → get approximate + residual (error)
+      Stage 2: Quantize residual → get better approximation
+      ... and so on
+      
+      Final result = sum of all stage reconstructions
+      
+   ⚙️ Settings:
+      └─ Bits per stage: {num_bits} ({2**num_bits} quantization levels)
+      └─ Number of stages: {num_stages}
+      └─ Input elements: {tensor.numel():,}
+""")
+    
     # Handle empty tensor
     if tensor.numel() == 0:
+        if verbose:
+            print(f"   ⚠️ Empty tensor, returning empty result")
         return []
     
     # Start with the original tensor as the residual
     residual = tensor.clone()
     payloads = []
+    initial_norm = tensor.norm().item()
+    
+    if verbose:
+        print(f"   📊 INPUT STATISTICS:")
+        print(f"      └─ Initial norm: {initial_norm:.6f}")
+        print(f"      └─ Value range: [{tensor.min().item():.6f}, {tensor.max().item():.6f}]")
+        print(f"\n   🔄 QUANTIZATION STAGES:")
     
     for stage in range(num_stages):
+        residual_norm_before = residual.norm().item()
+        
         # Quantize current residual
         q_indices, scale, zero_point = asymmetric_quantization(residual, num_bits)
         
         # Dequantize to compute next residual
         dequantized = asymmetric_dequantization(q_indices, scale, zero_point)
+        
+        # Compute residual for next stage (what this stage didn't capture)
+        new_residual = residual - dequantized
+        residual_norm_after = new_residual.norm().item()
         
         # Store this stage's payload
         payload = {
@@ -237,12 +274,53 @@ def multistage_residual_quantization(
             "quantized": q_indices.cpu(),      # Move to CPU for storage
             "scale": scale.cpu(),
             "zero_point": zero_point.cpu(),
-            "residual_norm": residual.norm().item()  # For diagnostics
+            "residual_norm": residual_norm_before  # For diagnostics
         }
         payloads.append(payload)
         
-        # Compute residual for next stage (what this stage didn't capture)
-        residual = residual - dequantized
+        if verbose:
+            error_reduction = (1 - residual_norm_after / residual_norm_before) * 100 if residual_norm_before > 1e-10 else 100
+            cumulative_captured = (1 - residual_norm_after / initial_norm) * 100 if initial_norm > 1e-10 else 100
+            print(f"\n      📍 STAGE {stage + 1}/{num_stages}:")
+            print(f"         └─ Residual before: {residual_norm_before:.6f}")
+            print(f"         └─ Residual after: {residual_norm_after:.6f}")
+            print(f"         └─ Error reduced by: {error_reduction:.1f}%")
+            print(f"         └─ Cumulative captured: {cumulative_captured:.1f}% of original")
+            print(f"         └─ Scale: {scale.item():.6f}, Zero-point: {zero_point.item():.1f}")
+        
+        # Update residual for next stage
+        residual = new_residual
+    
+    if verbose:
+        final_residual_norm = residual.norm().item()
+        total_captured = (1 - final_residual_norm / initial_norm) * 100 if initial_norm > 1e-10 else 100
+        
+        print(f"""
+   📊 RTVQ SUMMARY:
+   ├─ Stages completed: {num_stages}
+   ├─ Original norm: {initial_norm:.6f}
+   ├─ Final residual norm: {final_residual_norm:.6f}
+   └─ Total captured: {total_captured:.1f}%
+""")
+        
+        # Validation
+        print(f"   🔬 VALIDATION CHECKS:")
+        if total_captured >= 90:
+            print(f"   ✅ CHECK 1 PASSED: Excellent capture ({total_captured:.1f}% >= 90%)")
+        elif total_captured >= 70:
+            print(f"   ✅ CHECK 1 PASSED: Good capture ({total_captured:.1f}% >= 70%)")
+        else:
+            print(f"   ⚠️ CHECK 1 WARNING: Low capture ({total_captured:.1f}% < 70%)")
+            print(f"      └─ Consider increasing num_stages or num_bits")
+        
+        # Compression estimate
+        import math
+        original_bytes = tensor.numel() * 4  # float32
+        compressed_bytes = math.ceil(tensor.numel() * num_bits / 8) * num_stages + 8 * num_stages
+        compression_ratio = original_bytes / compressed_bytes
+        print(f"   ✅ CHECK 2: Compression ratio ~{compression_ratio:.1f}x")
+        
+        print(f"{'─'*60}\n")
     
     return payloads
 

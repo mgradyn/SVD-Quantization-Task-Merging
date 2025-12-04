@@ -202,12 +202,15 @@ def absmax_quantization(
             print(f"   ❌ QUALITY CHECK CONCERN: High error (>10%) - consider more bits")
         
         # Compression ratio
+        import math
         original_bits = 32  # float32
         compression = original_bits / qbit
+        # Calculate actual bytes - need to round up for sub-byte quantization
+        quantized_bytes = math.ceil(X.numel() * qbit / 8)
         print(f"""
    📦 COMPRESSION ACHIEVED:
    ├─ Original: {X.numel() * 4:,} bytes (float32)
-   ├─ Quantized: {X.numel() * qbit // 8:,} bytes ({qbit}-bit) + 4 bytes (scale)
+   ├─ Quantized: {quantized_bytes:,} bytes ({qbit}-bit) + 4 bytes (scale)
    └─ Compression ratio: {compression:.1f}x
 """)
         print(f"{'='*70}\n")
@@ -408,12 +411,15 @@ def asymmetric_quantization(
             print(f"\n   ❌ QUALITY CHECK CONCERN: High error (>10%) - consider more bits")
         
         # Compression ratio
+        import math
         original_bits = 32  # float32
         compression = original_bits / qbit
+        # Calculate actual bytes - need to round up for sub-byte quantization
+        quantized_bytes = math.ceil(X.numel() * qbit / 8)
         print(f"""
    📦 COMPRESSION ACHIEVED:
    ├─ Original: {X.numel() * 4:,} bytes (float32)
-   ├─ Quantized: {X.numel() * qbit // 8:,} bytes ({qbit}-bit) + 8 bytes (scale, zp)
+   ├─ Quantized: {quantized_bytes:,} bytes ({qbit}-bit) + 8 bytes (scale, zp)
    └─ Compression ratio: {compression:.1f}x
 """)
         print(f"{'='*70}\n")
