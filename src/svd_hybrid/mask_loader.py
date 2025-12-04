@@ -244,7 +244,8 @@ def load_task_masks(
     task_names: List[str],
     device: str = "cpu",
     reference_state_dict: Optional[Dict[str, torch.Tensor]] = None,
-    remove_keys: Optional[List[str]] = None
+    remove_keys: Optional[List[str]] = None,
+    verbose: bool = True
 ) -> Dict[str, Dict[str, torch.Tensor]]:
     """
     Load masks for multiple tasks.
@@ -271,6 +272,7 @@ def load_task_masks(
                              the original TALL mask format. If None, only individual
                              mask files will be searched.
         remove_keys: Keys to exclude when loading TALL format masks
+        verbose: Print tutorial-style progress messages
         
     Returns:
         Dictionary mapping task_name -> parameter_name -> boolean mask
@@ -286,6 +288,26 @@ def load_task_masks(
         >>> base_state = torch.load("base_model.pt")
         >>> masks = load_task_masks("./masks", ["Cars", "DTD"], reference_state_dict=base_state)
     """
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"📚 TUTORIAL: Loading Task-Specific Masks (Tall Masks)")
+        print(f"{'='*70}")
+        print(f"""
+🎯 WHAT ARE TALL MASKS?
+   Tall Masks identify which parameters (weights) are important for each task.
+   They are binary masks: True = important, False = not important.
+   
+   Think of it like a highlighter: we're marking which parts of the model
+   are especially relevant for each specific task.
+   
+   Example:
+   - For a "Cars" task, vision-related weights might be marked important
+   - For a "Text" task, language-related weights might be marked
+   
+📁 Loading masks from: {mask_dir}
+📋 Tasks to load: {task_names}
+""")
+    
     task_masks = {}
     num_tasks = len(task_names)
     
@@ -305,7 +327,10 @@ def load_task_masks(
     
     if tall_mask_file is not None and reference_state_dict is not None:
         # Load using original TALL mask format
-        print(f"Loading TALL masks from: {tall_mask_file}")
+        if verbose:
+            print(f"   📂 Found combined TALL mask file: {os.path.basename(tall_mask_file)}")
+            print(f"   └─ This format stores all task masks in a single compressed file")
+        
         all_task_masks = load_tall_mask_file(
             tall_mask_file,
             reference_state_dict,
@@ -317,13 +342,33 @@ def load_task_masks(
         for task_name in task_names:
             if task_name in all_task_masks:
                 task_masks[task_name] = all_task_masks[task_name]
+                if verbose:
+                    mask_size = sum(m.sum().item() for m in task_masks[task_name].values())
+                    total_size = sum(m.numel() for m in task_masks[task_name].values())
+                    coverage = mask_size / total_size * 100 if total_size > 0 else 0
+                    print(f"   ✅ {task_name}: Loaded ({coverage:.1f}% of parameters marked important)")
             else:
-                print(f"Warning: Task {task_name} not found in TALL mask file")
+                if verbose:
+                    print(f"   ⚠️ {task_name}: Not found in TALL mask file")
                 task_masks[task_name] = None
+        
+        if verbose:
+            loaded_count = sum(1 for v in task_masks.values() if v is not None)
+            print(f"\n   📊 LOADING SUMMARY:")
+            print(f"      └─ Successfully loaded: {loaded_count}/{len(task_names)} tasks")
+            if loaded_count == len(task_names):
+                print(f"   ✅ VALIDATION PASSED: All task masks loaded successfully")
+            else:
+                print(f"   ⚠️ WARNING: Some task masks were not found")
+            print(f"{'='*70}\n")
         
         return task_masks
     
     # Fall back to individual mask files
+    if verbose:
+        print(f"   📂 Loading individual mask files...")
+        print(f"   └─ Looking for: {{task}}_mask.pt, {{task}}.pt, or {{task}}/mask.pt")
+    
     for task_name in task_names:
         # Try various naming conventions
         possible_paths = [
@@ -340,10 +385,26 @@ def load_task_masks(
                 break
         
         if mask_path is None:
-            print(f"Warning: No mask found for task {task_name}, using all-ones mask")
+            if verbose:
+                print(f"   ⚠️ {task_name}: No mask found - will use all parameters")
             task_masks[task_name] = None  # Will be handled as full mask
         else:
             task_masks[task_name] = load_single_mask(mask_path, device)
+            if verbose:
+                mask_size = sum(m.sum().item() for m in task_masks[task_name].values())
+                total_size = sum(m.numel() for m in task_masks[task_name].values())
+                coverage = mask_size / total_size * 100 if total_size > 0 else 0
+                print(f"   ✅ {task_name}: Loaded from {os.path.basename(mask_path)} ({coverage:.1f}% coverage)")
+    
+    if verbose:
+        loaded_count = sum(1 for v in task_masks.values() if v is not None)
+        print(f"\n   📊 LOADING SUMMARY:")
+        print(f"      └─ Successfully loaded: {loaded_count}/{len(task_names)} tasks")
+        if loaded_count > 0:
+            print(f"   ✅ VALIDATION PASSED: Mask loading completed")
+        else:
+            print(f"   ℹ️ INFO: No masks loaded - all parameters will be used")
+        print(f"{'='*70}\n")
     
     return task_masks
 
@@ -427,7 +488,8 @@ def compute_majority_mask(masks: List[torch.Tensor], threshold: float = 0.5) -> 
 def combine_masks(
     task_masks: Dict[str, Dict[str, torch.Tensor]],
     strategy: str = "union",
-    device: str = "cpu"
+    device: str = "cpu",
+    verbose: bool = True
 ) -> Dict[str, torch.Tensor]:
     """
     Combine masks from multiple tasks using specified strategy.
@@ -439,6 +501,7 @@ def combine_masks(
         task_masks: Dictionary mapping task_name -> parameter_name -> mask
         strategy: Combination strategy - "union", "intersection", or "majority"
         device: Device for computation
+        verbose: Print tutorial-style progress messages
         
     Returns:
         Dictionary mapping parameter_name -> combined boolean mask
@@ -451,16 +514,73 @@ def combine_masks(
         >>> combined = combine_masks(task_masks, strategy="union")
         >>> # combined["layer1.weight"] = mask1 | mask2
     """
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"📚 TUTORIAL: Combining Task Masks")
+        print(f"{'='*70}")
+        print(f"""
+🎯 WHY COMBINE MASKS?
+   Each task has its own mask showing which parameters are important.
+   When merging multiple tasks, we need to decide which parameters to focus on.
+   
+   Strategy: '{strategy}'
+""")
+        if strategy == "union":
+            print(f"""
+   📖 UNION (OR) Strategy:
+      A parameter is important if ANY task marks it as important.
+      
+      mask_combined = mask_task1 OR mask_task2 OR mask_task3 ...
+      
+      ✓ Pros: Most inclusive - captures all potentially useful parameters
+      ✓ Best when: Tasks are diverse and don't overlap much
+      ✗ Cons: May include some noise
+""")
+        elif strategy == "intersection":
+            print(f"""
+   📖 INTERSECTION (AND) Strategy:
+      A parameter is important only if ALL tasks mark it as important.
+      
+      mask_combined = mask_task1 AND mask_task2 AND mask_task3 ...
+      
+      ✓ Pros: Most selective - only core shared parameters
+      ✓ Best when: Tasks share a lot of structure
+      ✗ Cons: May miss task-specific important parameters
+""")
+        elif strategy == "majority":
+            print(f"""
+   📖 MAJORITY Strategy:
+      A parameter is important if >50% of tasks mark it as important.
+      
+      mask_combined = (count(True) / num_tasks) >= 0.5
+      
+      ✓ Pros: Balanced approach between union and intersection
+      ✓ Best when: You want to filter out parameters only important for one task
+""")
+    
     if not task_masks:
+        if verbose:
+            print(f"   ⚠️ No task masks provided - returning empty result")
+            print(f"{'='*70}\n")
         return {}
     
     # Get all parameter names across all tasks
     all_param_names = set()
+    task_count = 0
     for task_name, param_masks in task_masks.items():
         if param_masks is not None:
             all_param_names.update(param_masks.keys())
+            task_count += 1
+    
+    if verbose:
+        print(f"   📊 Input Statistics:")
+        print(f"      └─ Tasks with masks: {task_count}/{len(task_masks)}")
+        print(f"      └─ Total unique parameters: {len(all_param_names)}")
+        print(f"\n   🔄 Combining masks for each parameter...")
     
     combined = {}
+    total_before = 0
+    total_after = 0
     
     for param_name in all_param_names:
         # Collect masks for this parameter across tasks
@@ -468,7 +588,6 @@ def combine_masks(
         
         for task_name, param_masks in task_masks.items():
             if param_masks is None:
-                # Task has no mask file, skip
                 continue
             
             if param_name in param_masks:
@@ -476,6 +595,10 @@ def combine_masks(
         
         if not param_mask_list:
             continue
+        
+        # Track statistics
+        for m in param_mask_list:
+            total_before += m.sum().item()
         
         # Combine based on strategy
         if strategy == "union":
@@ -486,6 +609,41 @@ def combine_masks(
             combined[param_name] = compute_majority_mask(param_mask_list)
         else:
             raise ValueError(f"Unknown mask strategy: {strategy}")
+        
+        total_after += combined[param_name].sum().item()
+    
+    if verbose:
+        # Compute statistics
+        total_elements = sum(m.numel() for m in combined.values()) if combined else 0
+        coverage = total_after / total_elements * 100 if total_elements > 0 else 0
+        
+        print(f"""
+   📊 COMBINATION RESULTS:
+   ├─ Parameters processed: {len(combined)}
+   ├─ Total masked elements: {int(total_after):,} / {total_elements:,}
+   └─ Final coverage: {coverage:.1f}% of parameters marked important
+""")
+        
+        # Validation
+        print(f"   🔬 VALIDATION CHECKS:")
+        if len(combined) > 0:
+            print(f"   ✅ CHECK 1 PASSED: Combined masks created for {len(combined)} parameters")
+        else:
+            print(f"   ⚠️ CHECK 1 WARNING: No combined masks created")
+        
+        if coverage > 0:
+            print(f"   ✅ CHECK 2 PASSED: Non-zero coverage ({coverage:.1f}%)")
+        else:
+            print(f"   ⚠️ CHECK 2 WARNING: Zero coverage - all parameters unmarked")
+        
+        if strategy == "union":
+            # Union should have highest coverage
+            print(f"   ℹ️ Union strategy: Coverage is maximal (includes all marked parameters)")
+        elif strategy == "intersection":
+            # Intersection should have lowest coverage
+            print(f"   ℹ️ Intersection strategy: Coverage is minimal (only shared parameters)")
+        
+        print(f"{'='*70}\n")
     
     return combined
 

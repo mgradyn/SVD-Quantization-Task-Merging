@@ -106,26 +106,100 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
         >>> results = run_svd_hybrid_pipeline(config)
         >>> model.load_state_dict(results["merged_state_dict"])
     """
+    # Print tutorial header
+    print(f"\n{'='*80}")
+    print(f"📚 SVD-HYBRID MODEL MERGING PIPELINE")
+    print(f"{'='*80}")
+    print(f"""
+🎯 WHAT IS SVD-HYBRID?
+   SVD-Hybrid is an advanced method for merging multiple fine-tuned models into one.
+   It combines:
+   • SVD (Singular Value Decomposition) - finds the most important directions
+   • Quantization - compresses the model changes efficiently
+   • Task Arithmetic - combines what different models learned
+   
+   The result: A single model that can perform multiple tasks!
+
+📋 PIPELINE OVERVIEW (9 Steps):
+   1. Load task vectors (what each model learned)
+   2. Load and combine masks (which parameters matter)
+   3. Extract parameter information
+   4. Construct SVD bases (find important directions)
+   5. Compress task vectors (reduce storage)
+   6. Compute task weights (how much each task matters)
+   7. Merge parameters (combine the learning)
+   8. Create merged model
+   9. Compute diagnostics (verify quality)
+""")
+    
     device = config.device if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
+    print(f"🖥️  Device: {device}")
+    print(f"📁 Tasks to merge: {config.tasks}")
+    print(f"{'='*80}\n")
     
-    # Load base model state dict (used for mask loading and final merging)
-    print("\nLoading base model...")
+    # Load base model state dict
+    print(f"{'─'*80}")
+    print(f"📂 PRELIMINARY: Loading Base Model")
+    print(f"{'─'*80}")
+    print(f"   └─ The base model is the starting point before any task-specific training")
+    print(f"   └─ Path: {config.base_model_path}")
     base_state_dict = load_checkpoint(config.base_model_path, device=device)
+    num_base_params = len(base_state_dict)
+    total_base_elements = sum(p.numel() for p in base_state_dict.values() if hasattr(p, 'numel'))
+    print(f"   ✅ LOADED: {num_base_params:,} parameters, {total_base_elements:,} total elements")
     
+    # =========================================================================
     # Step 1: Load task vectors
-    print("\n[Step 1/9] Loading task vectors...")
+    # =========================================================================
+    print(f"\n{'─'*80}")
+    print(f"📚 STEP 1/9: Loading Task Vectors")
+    print(f"{'─'*80}")
+    print(f"""
+   🎯 WHAT ARE TASK VECTORS?
+      Each task vector represents what a model "learned" during fine-tuning:
+      task_vector = fine_tuned_weights - base_weights
+      
+      By loading these, we can see exactly what changed for each task.
+""")
     task_checkpoint_paths = get_task_checkpoint_paths(config.checkpoint_dir, config.tasks)
+    print(f"   📁 Checkpoint directory: {config.checkpoint_dir}")
+    print(f"   📋 Tasks to load: {config.tasks}")
+    
     task_vectors = load_task_vectors(
         config.base_model_path,
         task_checkpoint_paths,
         device=device
     )
-    print(f"Loaded {len(task_vectors)} task vectors")
     
+    # Validation
+    print(f"\n   🔬 VALIDATION:")
+    if len(task_vectors) == len(config.tasks):
+        print(f"   ✅ CHECK PASSED: All {len(task_vectors)} task vectors loaded successfully")
+    else:
+        print(f"   ⚠️ WARNING: Expected {len(config.tasks)} tasks, got {len(task_vectors)}")
+    
+    # Show stats per task
+    print(f"\n   📊 TASK VECTOR STATISTICS:")
+    for task_name, tv in task_vectors.items():
+        total_norm = sum(d.norm().item()**2 for d in tv.values()) ** 0.5
+        print(f"      └─ {task_name}: {len(tv)} params, total change norm: {total_norm:.4f}")
+    
+    # =========================================================================
     # Step 2: Load and combine masks
-    print("\n[Step 2/9] Loading and combining masks...")
+    # =========================================================================
+    print(f"\n{'─'*80}")
+    print(f"📚 STEP 2/9: Loading and Combining Masks")
+    print(f"{'─'*80}")
+    print(f"""
+   🎯 WHAT ARE MASKS?
+      Masks identify which parameters are "important" for each task.
+      By combining masks, we focus on parameters that matter across tasks.
+      
+      Strategy '{config.svd_mask_strategy}' will be used to combine them.
+""")
+    
     if config.mask_dir and os.path.exists(config.mask_dir):
+        print(f"   📁 Mask directory: {config.mask_dir}")
         task_masks = load_task_masks(
             config.mask_dir, 
             config.tasks, 
@@ -133,25 +207,80 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
             reference_state_dict=base_state_dict
         )
         combined_masks = combine_masks(task_masks, strategy=config.svd_mask_strategy, device=device)
-        print(f"Combined masks using strategy: {config.svd_mask_strategy}")
+        
+        # Validation
+        if len(combined_masks) > 0:
+            total_masked = sum(m.sum().item() for m in combined_masks.values())
+            total_elements = sum(m.numel() for m in combined_masks.values())
+            mask_ratio = total_masked / max(total_elements, 1) * 100
+            print(f"   ✅ LOADED: {len(combined_masks)} parameter masks")
+            print(f"   📊 Coverage: {mask_ratio:.1f}% of parameters are masked (considered important)")
+        else:
+            print(f"   ⚠️ WARNING: No masks found or loaded")
     else:
-        print("No mask directory provided, using all parameters")
+        print(f"   ℹ️ No mask directory provided - using all parameters")
+        print(f"   └─ This means all parameters will be considered equally")
         combined_masks = {}
     
+    # =========================================================================
     # Step 3: Get parameter names and shapes
-    print("\n[Step 3/9] Extracting parameter information...")
+    # =========================================================================
+    print(f"\n{'─'*80}")
+    print(f"📚 STEP 3/9: Extracting Parameter Information")
+    print(f"{'─'*80}")
+    print(f"""
+   🎯 WHY THIS STEP?
+      We need to know the structure of all parameters to process them correctly.
+      This ensures we handle each layer/weight matrix appropriately.
+""")
+    
     param_names = get_parameter_names(task_vectors)
     original_shapes = {}
+    total_params = 0
     for task_vector in task_vectors.values():
         for param_name, delta in task_vector.items():
             if param_name not in original_shapes:
                 original_shapes[param_name] = delta.shape
-    print(f"Processing {len(param_names)} parameters")
+                total_params += delta.numel()
     
-    # Step 4: Construct bases for each parameter
-    print("\n[Step 4/9] Constructing SVD bases...")
+    print(f"   📊 Found {len(param_names):,} unique parameters")
+    print(f"   📊 Total parameter elements: {total_params:,}")
+    
+    # Show sample of parameter names
+    sample_params = list(param_names)[:5]
+    print(f"   📋 Sample parameters: {sample_params}")
+    if len(param_names) > 5:
+        print(f"      ... and {len(param_names) - 5} more")
+    
+    print(f"   ✅ VALIDATION: Parameter info extracted successfully")
+    
+    # =========================================================================
+    # Step 4: Construct SVD bases for each parameter
+    # =========================================================================
+    print(f"\n{'─'*80}")
+    print(f"📚 STEP 4/9: Constructing SVD Bases")
+    print(f"{'─'*80}")
+    print(f"""
+   🎯 WHAT IS SVD?
+      SVD (Singular Value Decomposition) finds the "principal directions" of change.
+      
+      Think of it like this: if multiple tasks all change weights in similar ways,
+      SVD finds those common patterns. This lets us:
+      • Compress the representation (fewer numbers to store)
+      • Focus on what matters (high-energy = important changes)
+      
+   ⚙️ Settings:
+      • Energy threshold: {config.svd_energy_threshold} (keep {config.svd_energy_threshold*100}% of variance)
+      • Max rank: {config.svd_max_rank} (limit complexity)
+      • Center data: {config.svd_center}
+""")
+    
     bases = {}
-    for param_name in param_names:
+    successful_bases = 0
+    total_energy_retained = 0
+    ranks_selected = []
+    
+    for i, param_name in enumerate(param_names):
         # Extract masked and unmasked deltas
         mask = combined_masks.get(param_name)
         
@@ -200,11 +329,50 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
             bases[param_name] = basis
             
             if basis.get("masked"):
-                print(f"  {param_name}: k={basis['masked']['k']}, "
-                      f"energy={basis['masked']['energy_retained']:.4f}")
+                successful_bases += 1
+                total_energy_retained += basis['masked']['energy_retained']
+                ranks_selected.append(basis['masked']['k'])
+                
+                # Print progress for significant parameters
+                if i < 5 or i % 50 == 0:
+                    print(f"   ├─ {param_name[:40]}{'...' if len(param_name) > 40 else ''}: "
+                          f"rank={basis['masked']['k']}, energy={basis['masked']['energy_retained']:.4f}")
     
+    # Validation and summary
+    avg_energy = total_energy_retained / max(successful_bases, 1)
+    avg_rank = sum(ranks_selected) / max(len(ranks_selected), 1)
+    
+    print(f"\n   📊 SVD BASIS SUMMARY:")
+    print(f"      └─ Bases constructed: {successful_bases}/{len(param_names)}")
+    print(f"      └─ Average energy retained: {avg_energy:.4f} ({avg_energy*100:.1f}%)")
+    print(f"      └─ Average rank selected: {avg_rank:.1f}")
+    print(f"      └─ Rank range: [{min(ranks_selected) if ranks_selected else 0}, {max(ranks_selected) if ranks_selected else 0}]")
+    
+    if avg_energy >= config.svd_energy_threshold - 0.05:
+        print(f"   ✅ VALIDATION: Energy threshold met (target: {config.svd_energy_threshold})")
+    else:
+        print(f"   ⚠️ WARNING: Average energy below threshold (got {avg_energy:.4f}, target {config.svd_energy_threshold})")
+    
+    # =========================================================================
     # Step 5: Compress task vectors
-    print("\n[Step 5/9] Compressing task vectors...")
+    # =========================================================================
+    print(f"\n{'─'*80}")
+    print(f"📚 STEP 5/9: Compressing Task Vectors")
+    print(f"{'─'*80}")
+    print(f"""
+   🎯 WHY COMPRESS?
+      After SVD, we have coefficients for each task. Now we quantize (compress)
+      the less important coefficients to save space.
+      
+   ⚙️ Compression Settings:
+      • Low-energy bits: {config.svd_low_bits} bits
+      • RTVQ stages: {config.svd_rtvq_stages} (more stages = better quality)
+      
+   💡 How it works:
+      • High-energy coefficients → FP16 (preserve accuracy)
+      • Low-energy coefficients → {config.svd_low_bits}-bit RTVQ (save space)
+""")
+    
     compressed_all = compress_all_parameters(
         task_vectors,
         combined_masks,
@@ -212,22 +380,40 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
         config,
         device=device
     )
-    print(f"Compressed {len(compressed_all)} parameters")
     
+    print(f"   ✅ COMPRESSED: {len(compressed_all)} parameters")
+    
+    # Estimate compression ratio
+    original_size = sum(
+        sum(d.numel() * 4 for d in tv.values())  # 4 bytes per float32
+        for tv in task_vectors.values()
+    )
+    print(f"   📊 Original size (all tasks): ~{original_size / 1024 / 1024:.1f} MB")
+    
+    # =========================================================================
     # Step 6: Compute task weights
-    print("\n[Step 6/9] Computing task weights...")
+    # =========================================================================
+    print(f"\n{'─'*80}")
+    print(f"📚 STEP 6/9: Computing Task Weights")
+    print(f"{'─'*80}")
+    print(f"""
+   🎯 WHY WEIGHT TASKS?
+      Not all tasks are equally important or perform equally well.
+      Weighting lets us give more influence to better-performing tasks.
+      
+   ⚙️ Weighting Strategy: '{config.svd_weighting}'
+""")
+    
     cluster_assignments = None
     
     if config.svd_weighting == "cluster":
-        # Cluster tasks
-        print(f"Clustering tasks into {config.svd_cluster_k} clusters...")
+        print(f"   🔄 Clustering tasks into {config.svd_cluster_k} groups...")
         cluster_assignments = cluster_tasks(task_vectors, config.svd_cluster_k, method="kmeans")
         
-        # Print cluster assignments
         from .clustering import get_cluster_members
         clusters = get_cluster_members(cluster_assignments)
         for cluster_id, members in clusters.items():
-            print(f"  Cluster {cluster_id}: {members}")
+            print(f"      └─ Cluster {cluster_id}: {members}")
     
     weights = compute_weights(
         config.tasks,
@@ -237,13 +423,38 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
         cluster_assignments=cluster_assignments
     )
     
-    print("Task weights:")
+    print(f"\n   📊 TASK WEIGHTS:")
+    total_weight = 0
     for task_name, weight in sorted(weights.items()):
-        print(f"  {task_name}: {weight:.4f}")
+        bar_len = int(weight * 40)
+        bar = '█' * bar_len + '░' * (40 - bar_len)
+        print(f"      {task_name:15s}: {weight:.4f} [{bar}]")
+        total_weight += weight
     
+    # Validation
+    if abs(total_weight - 1.0) < 0.01:
+        print(f"   ✅ VALIDATION: Weights sum to {total_weight:.4f} (should be ~1.0)")
+    else:
+        print(f"   ⚠️ WARNING: Weights sum to {total_weight:.4f} (expected ~1.0)")
+    
+    # =========================================================================
     # Step 7: Merge parameters
-    print("\n[Step 7/9] Merging parameters...")
+    # =========================================================================
+    print(f"\n{'─'*80}")
+    print(f"📚 STEP 7/9: Merging Parameters")
+    print(f"{'─'*80}")
+    print(f"""
+   🎯 THE MAGIC STEP!
+      Now we combine all the task vectors into one merged representation.
+      
+   💡 Process:
+      1. Dequantize the compressed coefficients
+      2. Compute weighted average: merged = Σ(weight_i × task_i)
+      3. Reconstruct the parameter deltas from coefficients
+""")
+    
     if config.svd_weighting == "cluster" and cluster_assignments is not None:
+        print(f"   └─ Using cluster-based merging (hierarchical)")
         merged_deltas = merge_with_clustering(
             compressed_all,
             bases,
@@ -255,6 +466,7 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
             device=device
         )
     else:
+        print(f"   └─ Using direct weighted averaging")
         merged_deltas = merge_all_parameters(
             compressed_all,
             bases,
@@ -264,20 +476,58 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
             config,
             device=device
         )
-    print(f"Merged {len(merged_deltas)} parameters")
     
+    print(f"   ✅ MERGED: {len(merged_deltas)} parameters")
+    
+    # Compute merge statistics
+    total_merge_norm = sum(d.norm().item()**2 for d in merged_deltas.values()) ** 0.5
+    print(f"   📊 Total merged delta norm: {total_merge_norm:.4f}")
+    
+    # =========================================================================
     # Step 8: Apply to base model
-    print("\n[Step 8/9] Creating merged model...")
-    # Reuse base_state_dict loaded at the start (make a copy to avoid modifying original)
+    # =========================================================================
+    print(f"\n{'─'*80}")
+    print(f"📚 STEP 8/9: Creating Merged Model")
+    print(f"{'─'*80}")
+    print(f"""
+   🎯 FINAL ASSEMBLY!
+      We add the merged deltas back to the base model:
+      merged_model = base_model + merged_deltas
+      
+      This creates a single model that combines all task knowledge!
+""")
+    
+    # Make a copy of base state dict
     merged_state_dict = apply_merged_deltas(
         {k: v.clone() for k, v in base_state_dict.items()}, 
         merged_deltas, 
         device=device
     )
-    print("Merged model created")
     
+    print(f"   ✅ CREATED: Merged model with {len(merged_state_dict):,} parameters")
+    
+    # Validation: Check shapes match
+    shape_match = all(
+        merged_state_dict[k].shape == base_state_dict[k].shape
+        for k in base_state_dict.keys()
+    )
+    if shape_match:
+        print(f"   ✅ VALIDATION: All parameter shapes match base model")
+    else:
+        print(f"   ❌ ERROR: Some parameter shapes don't match!")
+    
+    # =========================================================================
     # Step 9: Compute diagnostics
-    print("\n[Step 9/9] Computing diagnostics...")
+    # =========================================================================
+    print(f"\n{'─'*80}")
+    print(f"📚 STEP 9/9: Computing Diagnostics")
+    print(f"{'─'*80}")
+    print(f"""
+   🎯 QUALITY CHECK
+      We measure how well we preserved the original task information
+      after all the compression and merging.
+""")
+    
     if config.svd_eval_reconstruction:
         diagnostics = compute_all_diagnostics(
             task_vectors,
@@ -294,12 +544,24 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
             diagnostics["cluster_assignments"] = cluster_assignments
         
         print_diagnostics_summary(diagnostics)
+        
+        # Additional validation
+        summary = diagnostics.get("summary", {})
+        avg_error = summary.get("average_reconstruction_error", 0)
+        
+        if avg_error < 0.05:
+            print(f"   ✅ QUALITY CHECK PASSED: Reconstruction error {avg_error:.4f} (<5%)")
+        elif avg_error < 0.10:
+            print(f"   ⚠️ QUALITY CHECK WARNING: Reconstruction error {avg_error:.4f} (5-10%)")
+        else:
+            print(f"   ❌ QUALITY CONCERN: High reconstruction error {avg_error:.4f} (>10%)")
     else:
         diagnostics = {"task_weights": weights}
+        print(f"   ℹ️ Skipping reconstruction evaluation (disabled in config)")
     
     # Save artifacts if requested
     if config.svd_store_artifacts:
-        print("\nSaving artifacts...")
+        print(f"\n📦 Saving artifacts to {config.artifact_dir}...")
         save_all_artifacts(
             bases,
             compressed_all,
@@ -307,9 +569,10 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
             config,
             config.artifact_dir
         )
+        print(f"   ✅ Artifacts saved")
     
     # Save merged model
-    print("\nSaving merged model...")
+    print(f"\n💾 Saving merged model to {config.output_dir}...")
     save_merged_model(merged_state_dict, config.output_dir)
     
     # Save weights and clusters separately for convenience
@@ -323,9 +586,25 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
         with open(os.path.join(config.output_dir, "clusters.json"), 'w') as f:
             json.dump(cluster_assignments, f, indent=2)
     
-    print("\n" + "="*60)
-    print("SVD-Hybrid merging complete!")
-    print("="*60)
+    # Final summary
+    print(f"\n{'='*80}")
+    print(f"🎉 SVD-HYBRID MERGING COMPLETE!")
+    print(f"{'='*80}")
+    print(f"""
+   📊 FINAL SUMMARY:
+   ├─ Tasks merged: {len(config.tasks)} ({', '.join(config.tasks)})
+   ├─ Parameters processed: {len(merged_deltas):,}
+   ├─ Average SVD rank: {avg_rank:.1f}
+   ├─ Average energy retained: {avg_energy*100:.1f}%
+   ├─ Merged model saved to: {config.output_dir}/merged_state_dict.pt
+   └─ Weighting: {config.svd_weighting}
+   
+   💡 NEXT STEPS:
+   • Load the merged model: torch.load('{config.output_dir}/merged_state_dict.pt')
+   • Run evaluation on each task to verify performance
+   • Compare with individual fine-tuned models
+""")
+    print(f"{'='*80}\n")
     
     return {
         "merged_state_dict": merged_state_dict,

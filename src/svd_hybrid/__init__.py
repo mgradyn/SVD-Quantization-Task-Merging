@@ -45,6 +45,26 @@ multiple fine-tuned models into a single multi-task model. It uses:
     >>> # Access the merged model
     >>> merged_model = results["merged_state_dict"]
 
+=== EVALUATION ===
+
+After merging, you can evaluate and compare methods:
+
+    >>> from src.svd_hybrid import evaluate_merged_model, compare_methods
+    >>> 
+    >>> # Evaluate the merged model
+    >>> eval_results = evaluate_merged_model(
+    ...     merged_model, 
+    ...     task_names=["Cars", "DTD"],
+    ...     evaluation_fn=my_eval_function  # Your evaluation function
+    ... )
+    >>> 
+    >>> # Compare with baselines
+    >>> comparison = compare_methods(
+    ...     base_state_dict, 
+    ...     task_vectors,
+    ...     svd_hybrid_state_dict=merged_model
+    ... )
+
 === COMMAND LINE USAGE ===
 
     python src/main.py --method svd_hybrid \\
@@ -62,5 +82,22 @@ __version__ = "0.1.0"
 from .config import SVDHybridConfig
 from .run import run_svd_hybrid
 
+# Import evaluation functions
+from .evaluation import (
+    evaluate_merged_model,
+    compare_methods,
+    create_baseline_task_arithmetic,
+    create_baseline_ties,
+    generate_evaluation_report
+)
+
 # Define what gets exported with "from svd_hybrid import *"
-__all__ = ["SVDHybridConfig", "run_svd_hybrid"]
+__all__ = [
+    "SVDHybridConfig", 
+    "run_svd_hybrid",
+    "evaluate_merged_model",
+    "compare_methods",
+    "create_baseline_task_arithmetic",
+    "create_baseline_ties",
+    "generate_evaluation_report"
+]

@@ -288,7 +288,8 @@ def merge_all_parameters(
     weights: Dict[str, float],
     original_shapes: Dict[str, torch.Size],
     config,
-    device: str = "cpu"
+    device: str = "cpu",
+    verbose: bool = True
 ) -> Dict[str, torch.Tensor]:
     """
     Merge all parameters.
@@ -301,18 +302,53 @@ def merge_all_parameters(
         original_shapes: Dictionary mapping parameter_name -> shape
         config: SVDHybridConfig
         device: Device for computation
+        verbose: Print tutorial-style progress messages
         
     Returns:
         Dictionary mapping parameter_name -> merged delta
     """
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"📚 TUTORIAL: Merging Compressed Task Vectors")
+        print(f"{'='*70}")
+        print(f"""
+🎯 WHAT IS MERGING?
+   This is where we combine the compressed representations of all tasks
+   into a single merged model. The process:
+   
+   1. DEQUANTIZE: Convert quantized coefficients back to floats
+   2. WEIGHTED AVERAGE: Combine across tasks: merged = Σ(weight_i × task_i)
+   3. RECONSTRUCT: Transform back to parameter space: delta = U × coeffs
+   4. The merged delta will be added to the base model
+   
+   ⚙️ Settings:
+   └─ RTVQ bits: {config.svd_low_bits}
+   └─ RTVQ stages: {config.svd_rtvq_stages}
+   └─ Include noise: {config.svd_include_noise}
+   └─ Noise shrink factor: {config.svd_noise_shrink}
+""")
+        
+        print(f"   📊 TASK WEIGHTS:")
+        for task_name, weight in sorted(weights.items()):
+            bar_len = int(weight * 30)
+            bar = '█' * bar_len + '░' * (30 - bar_len)
+            print(f"      {task_name:15s}: {weight:.4f} [{bar}]")
+    
     quantizer = RTVQQuantizer(
         num_bits=config.svd_low_bits,
         num_stages=config.svd_rtvq_stages
     )
     
     merged_deltas = {}
+    total_params = len(compressed_all)
     
-    for param_name in sorted(compressed_all.keys()):
+    if verbose:
+        print(f"\n   🔄 Merging {total_params} parameters...")
+    
+    # Track statistics
+    total_merged_norm = 0.0
+    
+    for i, param_name in enumerate(sorted(compressed_all.keys())):
         compressed_params = compressed_all[param_name]
         basis = bases[param_name]
         mask = masks.get(param_name)
@@ -332,6 +368,40 @@ def merge_all_parameters(
         )
         
         merged_deltas[param_name] = merged
+        total_merged_norm += merged.norm().item() ** 2
+        
+        # Progress update (every 10% or for first/last few)
+        if verbose and (i < 3 or i >= total_params - 2 or (i + 1) % max(1, total_params // 10) == 0):
+            print(f"      [{i+1}/{total_params}] {param_name[:40]}{'...' if len(param_name) > 40 else ''}")
+    
+    total_merged_norm = total_merged_norm ** 0.5
+    
+    if verbose:
+        print(f"""
+   📊 MERGE RESULTS:
+   ├─ Parameters merged: {len(merged_deltas)}
+   ├─ Total merged delta norm: {total_merged_norm:.6f}
+   └─ Average delta norm per param: {total_merged_norm / max(len(merged_deltas), 1):.6f}
+""")
+        
+        # Validation
+        print(f"   🔬 VALIDATION CHECKS:")
+        if len(merged_deltas) == total_params:
+            print(f"   ✅ CHECK 1 PASSED: All {total_params} parameters merged")
+        else:
+            print(f"   ⚠️ CHECK 1 WARNING: Only {len(merged_deltas)}/{total_params} merged")
+        
+        if total_merged_norm > 0:
+            print(f"   ✅ CHECK 2 PASSED: Non-zero merged deltas (norm={total_merged_norm:.6f})")
+        else:
+            print(f"   ⚠️ CHECK 2 WARNING: Zero merged deltas!")
+        
+        print(f"""
+   💡 WHAT'S NEXT?
+      These merged deltas will be added to the base model:
+      merged_model = base_model + merged_deltas
+""")
+        print(f"{'='*70}\n")
     
     return merged_deltas
 
@@ -339,7 +409,8 @@ def merge_all_parameters(
 def apply_merged_deltas(
     base_state_dict: Dict[str, torch.Tensor],
     merged_deltas: Dict[str, torch.Tensor],
-    device: str = "cpu"
+    device: str = "cpu",
+    verbose: bool = True
 ) -> Dict[str, torch.Tensor]:
     """
     Apply merged deltas to base model to create merged model.
@@ -357,6 +428,7 @@ def apply_merged_deltas(
         base_state_dict: Base model state dict
         merged_deltas: Merged delta vectors from merge_all_parameters
         device: Device for computation
+        verbose: Print tutorial-style progress messages
         
     Returns:
         Merged model state dict ready to load into a model
@@ -365,7 +437,28 @@ def apply_merged_deltas(
         >>> merged_state = apply_merged_deltas(base_state, merged_deltas)
         >>> model.load_state_dict(merged_state)
     """
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"📚 TUTORIAL: Applying Merged Deltas to Base Model")
+        print(f"{'='*70}")
+        print(f"""
+🎯 THE FINAL STEP!
+   We now add the merged deltas back to the base model:
+   
+   merged_model[param] = base_model[param] + merged_delta[param]
+   
+   This creates the final merged model that combines knowledge
+   from all tasks!
+   
+   📊 Input:
+   └─ Base model parameters: {len(base_state_dict)}
+   └─ Merged deltas: {len(merged_deltas)}
+""")
+    
     merged_state_dict = {}
+    modified_count = 0
+    unchanged_count = 0
+    total_delta_applied = 0.0
     
     for param_name, base_param in base_state_dict.items():
         if param_name in merged_deltas:
@@ -373,9 +466,68 @@ def apply_merged_deltas(
             delta = merged_deltas[param_name].to(base_param.device)
             merged_param = base_param + delta
             merged_state_dict[param_name] = merged_param
+            modified_count += 1
+            total_delta_applied += delta.norm().item() ** 2
         else:
             # Keep base value unchanged
             merged_state_dict[param_name] = base_param.clone()
+            unchanged_count += 1
+    
+    total_delta_applied = total_delta_applied ** 0.5
+    
+    if verbose:
+        print(f"""
+   📊 APPLICATION RESULTS:
+   ├─ Parameters modified: {modified_count}
+   ├─ Parameters unchanged: {unchanged_count}
+   ├─ Total parameters: {len(merged_state_dict)}
+   └─ Total delta applied (norm): {total_delta_applied:.6f}
+""")
+        
+        # Validation
+        print(f"   🔬 VALIDATION CHECKS:")
+        
+        if len(merged_state_dict) == len(base_state_dict):
+            print(f"   ✅ CHECK 1 PASSED: All {len(merged_state_dict)} parameters accounted for")
+        else:
+            print(f"   ❌ CHECK 1 FAILED: Parameter count mismatch!")
+        
+        if modified_count > 0:
+            print(f"   ✅ CHECK 2 PASSED: {modified_count} parameters were updated")
+        else:
+            print(f"   ⚠️ CHECK 2 WARNING: No parameters modified (empty deltas?)")
+        
+        # Verify shapes match
+        shapes_match = all(
+            merged_state_dict[k].shape == base_state_dict[k].shape
+            for k in base_state_dict.keys()
+        )
+        if shapes_match:
+            print(f"   ✅ CHECK 3 PASSED: All parameter shapes match")
+        else:
+            print(f"   ❌ CHECK 3 FAILED: Shape mismatch detected!")
+        
+        # Sample verification
+        if modified_count > 0:
+            sample_param = list(merged_deltas.keys())[0]
+            expected = base_state_dict[sample_param] + merged_deltas[sample_param].to(base_state_dict[sample_param].device)
+            actual = merged_state_dict[sample_param]
+            verification_error = (expected - actual).abs().max().item()
+            
+            if verification_error < 1e-6:
+                print(f"   ✅ CHECK 4 PASSED: Computation verified (error={verification_error:.2e})")
+            else:
+                print(f"   ❌ CHECK 4 FAILED: Computation error={verification_error:.2e}")
+        
+        print(f"""
+   🎉 MERGED MODEL CREATED!
+   
+   💡 NEXT STEPS:
+   • Load into your model: model.load_state_dict(merged_state_dict)
+   • Run evaluation on each task
+   • Compare with individual fine-tuned models
+""")
+        print(f"{'='*70}\n")
     
     return merged_state_dict
 

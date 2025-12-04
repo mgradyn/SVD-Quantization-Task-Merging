@@ -255,7 +255,8 @@ def construct_basis(
     max_rank: Optional[int] = None,
     center: bool = True,
     device: str = "cpu",
-    use_randomized: bool = False
+    use_randomized: bool = False,
+    verbose: bool = True
 ) -> Dict:
     """
     Construct SVD basis from task delta vectors.
@@ -267,6 +268,7 @@ def construct_basis(
         center: Whether to center the matrix
         device: Device for computation
         use_randomized: Use randomized SVD
+        verbose: Print tutorial-style progress messages
         
     Returns:
         Dictionary containing:
@@ -282,34 +284,116 @@ def construct_basis(
     if not deltas:
         raise ValueError("Empty delta list")
     
+    if verbose:
+        print(f"\n{'─'*60}")
+        print(f"🔬 SVD Basis Construction")
+        print(f"{'─'*60}")
+        print(f"""
+   🎯 WHAT IS SVD DOING HERE?
+      SVD (Singular Value Decomposition) finds the "principal directions"
+      that best explain how task vectors vary. Think of it like finding
+      the main axes of variation in a cloud of data points.
+      
+      M = U × Σ × V^T
+      
+      Where:
+      • U contains the basis vectors (directions in parameter space)
+      • Σ contains singular values (importance of each direction)
+      • We keep high-Σ directions (important) in high precision
+      • We quantize low-Σ directions (less important) to save space
+""")
+    
     # Stack and center
     T, mean = stack_and_center(deltas, center)
     T = T.to(device)
     
     D, N = T.shape
     
+    if verbose:
+        print(f"   📊 INPUT DATA:")
+        print(f"      └─ Number of tasks (N): {N}")
+        print(f"      └─ Parameter dimension (D): {D:,}")
+        print(f"      └─ Matrix shape: {D} × {N}")
+        print(f"      └─ Centering: {'Yes (subtracting mean)' if center else 'No'}")
+        if center and mean is not None:
+            mean_norm = mean.norm().item()
+            print(f"      └─ Mean vector norm: {mean_norm:.6f}")
+    
     # Compute SVD
+    if verbose:
+        print(f"\n   🔄 Computing SVD decomposition...")
+    
     U, S, Vh = compute_svd(T, full_matrices=False, use_randomized=use_randomized)
-
-    # log
+    
+    # Compute energy spectrum
     sv = S.cpu().numpy()
     energy = sv**2
-    cum = energy.cumsum() / energy.sum() if energy.sum() > 0 else np.ones_like(energy)
-    print("shape DxN:", D, "x", N)
-    print("singular values:", sv)
-    print("cumulative energy:", cum)
-    print("selected k:", select_rank(S, energy_threshold=0.95, max_rank=max_rank))
-    # log
+    total_energy = energy.sum()
+    cum_energy = energy.cumsum() / total_energy if total_energy > 0 else np.ones_like(energy)
+    
+    if verbose:
+        print(f"   ✅ SVD completed!")
+        print(f"\n   📊 SINGULAR VALUE ANALYSIS:")
+        print(f"      └─ Number of singular values: {len(S)}")
+        print(f"      └─ Largest singular value: {sv[0]:.6f}")
+        print(f"      └─ Smallest singular value: {sv[-1]:.6f}" if len(sv) > 1 else "")
+        print(f"      └─ Total energy (sum of σ²): {total_energy:.6f}")
+        
+        # Show energy distribution
+        print(f"\n   📈 CUMULATIVE ENERGY SPECTRUM:")
+        print(f"      (How much variance is captured by first k components)")
+        milestones = [0.5, 0.75, 0.9, 0.95, 0.99]
+        for milestone in milestones:
+            k_needed = int((cum_energy < milestone).sum()) + 1
+            if k_needed <= len(cum_energy):
+                print(f"      └─ {milestone*100:5.1f}% energy: k = {k_needed}")
     
     # Select rank
     k = select_rank(S, energy_threshold, max_rank)
+    
+    if verbose:
+        print(f"\n   🎯 RANK SELECTION:")
+        print(f"      └─ Energy threshold: {energy_threshold*100:.1f}%")
+        print(f"      └─ Max rank cap: {max_rank if max_rank else 'None'}")
+        print(f"      └─ Selected rank k: {k}")
+        actual_energy = cum_energy[k-1] if k > 0 else 0
+        print(f"      └─ Actual energy retained: {actual_energy*100:.2f}%")
     
     # Split into high and low energy bases
     U_high = U[:, :k].contiguous()
     U_low = U[:, k:].contiguous()
     
     # Compute energy retained
-    energy_retained = compute_energy_spectrum(S)[k-1].item()
+    energy_retained = compute_energy_spectrum(S)[k-1].item() if k > 0 else 0
+    
+    if verbose:
+        print(f"\n   📦 BASIS SPLIT:")
+        print(f"      └─ U_high shape: [{D}, {k}] (high-energy, stored in FP16)")
+        print(f"      └─ U_low shape: [{D}, {U_low.shape[1]}] (low-energy, will be quantized)")
+        
+        # Validation
+        print(f"\n   🔬 VALIDATION CHECKS:")
+        
+        # Check 1: Energy threshold met
+        if energy_retained >= energy_threshold:
+            print(f"   ✅ CHECK 1 PASSED: Energy threshold met ({energy_retained*100:.2f}% >= {energy_threshold*100:.1f}%)")
+        else:
+            print(f"   ⚠️ CHECK 1 WARNING: Energy below threshold ({energy_retained*100:.2f}% < {energy_threshold*100:.1f}%)")
+            print(f"      └─ This can happen when max_rank limits the rank selection")
+        
+        # Check 2: Basis is orthogonal (should be by SVD construction)
+        if U_high.shape[1] > 0:
+            orthogonality = (U_high.T @ U_high - torch.eye(k, device=U_high.device)).abs().max().item()
+            if orthogonality < 1e-5:
+                print(f"   ✅ CHECK 2 PASSED: Basis is orthogonal (error={orthogonality:.2e})")
+            else:
+                print(f"   ⚠️ CHECK 2 WARNING: Orthogonality error={orthogonality:.2e}")
+        
+        # Check 3: Reasonable compression
+        compression = D / k if k > 0 else float('inf')
+        print(f"   ✅ CHECK 3: Dimension reduction {D} → {k} ({compression:.1f}x)")
+        
+        print(f"{'─'*60}\n")
     
     result = {
         "U_high": U_high,
@@ -332,7 +416,8 @@ def construct_masked_basis(
     max_rank: Optional[int] = None,
     center: bool = True,
     device: str = "cpu",
-    include_noise: bool = False
+    include_noise: bool = False,
+    verbose: bool = False
 ) -> Dict:
     """
     Construct basis for masked (signal) and optionally unmasked (noise) regions.
@@ -345,6 +430,7 @@ def construct_masked_basis(
         center: Whether to center
         device: Device for computation
         include_noise: Whether to construct noise basis
+        verbose: Print progress messages (passed to construct_basis)
         
     Returns:
         Dictionary containing masked basis and optionally noise basis
@@ -358,7 +444,8 @@ def construct_masked_basis(
             energy_threshold=energy_threshold,
             max_rank=max_rank,
             center=center,
-            device=device
+            device=device,
+            verbose=verbose
         )
         result["masked"] = masked_basis
     else:
@@ -371,7 +458,8 @@ def construct_masked_basis(
             energy_threshold=energy_threshold,
             max_rank=max_rank,
             center=center,
-            device=device
+            device=device,
+            verbose=verbose
         )
         result["noise"] = noise_basis
     else:
