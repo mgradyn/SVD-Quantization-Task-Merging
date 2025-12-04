@@ -8,12 +8,20 @@ from src.svd_hybrid.merge import merge_all_parameters, apply_merged_deltas
 from src.svd_hybrid.weighting import compute_uniform_weights
 from src.svd_hybrid.task_vector_loader import load_checkpoint
 
+def _resolve_device(device: str | None) -> str:
+    """
+    Resolve the device string. If device is None or "auto", choose "cuda"
+    if available, else "cpu".
+    """
+    if device is None or device == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    return device
 
 def reconstruct_from_artifacts(
     artifact_dir: str,
     base_model_path: str,
     output_path: str,
-    device: str = "cpu"
+    device: str | None = None
 ):
     """
     Reconstruct merged model from stored artifacts.
@@ -24,6 +32,10 @@ def reconstruct_from_artifacts(
         output_path: Path to save reconstructed model
         device: Device to use
     """
+
+    device = _resolve_device(device)
+    print(f"Using device: {device}")
+    
     print(f"Loading artifacts from {artifact_dir}...")
     artifacts = load_all_artifacts(artifact_dir, device=device)
     
