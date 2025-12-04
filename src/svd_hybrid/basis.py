@@ -236,6 +236,7 @@ def compute_svd(
         # In production, could use sklearn.utils.extmath.randomized_svd
         print(f"Warning: Randomized SVD not implemented, using standard SVD")
     
+    original_device = matrix.device
     try:
         U, S, Vh = torch.linalg.svd(matrix, full_matrices=full_matrices)
         return U, S, Vh
@@ -244,7 +245,8 @@ def compute_svd(
         # Fallback to CPU
         matrix_cpu = matrix.cpu()
         U, S, Vh = torch.linalg.svd(matrix_cpu, full_matrices=full_matrices)
-        return U, S, Vh
+        # Move results back to the original device
+        return U.to(original_device), S.to(original_device), Vh.to(original_device)
 
 
 def construct_basis(
