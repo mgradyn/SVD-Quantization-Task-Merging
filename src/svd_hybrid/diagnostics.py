@@ -62,8 +62,11 @@ and merging. Good diagnostics help you:
 
 import torch
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 from .rtvq import RTVQQuantizer, estimate_compression_ratio
+
+if TYPE_CHECKING:
+    from .config import SVDHybridConfig
 
 
 def compute_reconstruction_error(
@@ -383,7 +386,7 @@ def compute_compression_statistics(
     task_vectors: Dict[str, Dict[str, torch.Tensor]],
     compressed_all: Dict[str, Dict[str, Dict]],
     bases: Dict[str, Dict],
-    config
+    config: "SVDHybridConfig"
 ) -> Dict:
     """
     Compute detailed compression statistics for scientific logging.
@@ -565,9 +568,9 @@ def compute_compression_statistics(
 
 def print_detailed_compression_report(
     compression_stats: Dict,
-    config,
+    config: "SVDHybridConfig",
     top_n_params: int = 5
-):
+) -> None:
     """
     Print a detailed scientific report of compression statistics.
     
@@ -583,6 +586,11 @@ def print_detailed_compression_report(
     original = compression_stats.get("original", {})
     compressed = compression_stats.get("compressed", {})
     per_param = compression_stats.get("per_parameter", {})
+    
+    # Pre-compute values for cleaner formatting
+    energy_pct = int(config.svd_energy_threshold * 100)
+    low_bits = config.svd_low_bits
+    rtvq_stages = config.svd_rtvq_stages
     
     print(f"\n{'═'*80}")
     print(f"📊 DETAILED COMPRESSION ANALYSIS")
@@ -600,7 +608,7 @@ def print_detailed_compression_report(
 │     Compute SVD: T = U × Σ × Vᵀ                                             │
 │                                                                              │
 │     Split basis by energy:                                                  │
-│       • U_high = U[:, :k]   (top k columns capturing {config.svd_energy_threshold*100:.0f}% energy)        │
+│       • U_high = U[:, :k]   (top k columns capturing {energy_pct}% energy)          │
 │       • U_low = U[:, k:]    (remaining columns)                             │
 │                                                                              │
 │  📦 PROJECTION (per task):                                                  │
@@ -609,7 +617,7 @@ def print_detailed_compression_report(
 │                                                                              │
 │  🗜️ QUANTIZATION:                                                           │
 │     c_high → FP16 (16-bit float, 2 bytes/value)                            │
-│     c_low  → {config.svd_low_bits}-bit RTVQ × {config.svd_rtvq_stages} stages                                      │
+│     c_low  → {low_bits}-bit RTVQ × {rtvq_stages} stages                                          │
 │                                                                              │
 │  🔄 RTVQ (Residual Task Vector Quantization):                               │
 │     Stage 1: q₁ = quantize(c_low), r₁ = c_low - dequant(q₁)                │

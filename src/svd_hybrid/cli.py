@@ -374,7 +374,8 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
                     D = basis['masked']['D']
                     energy = basis['masked']['energy_retained']
                     reduction = D / k if k > 0 else float('inf')
-                    print(f"   ├─ {param_name[:35]}{'...' if len(param_name) > 35 else '':<5}")
+                    suffix = '...' if len(param_name) > 35 else ''
+                    print(f"   ├─ {param_name[:35]}{suffix}")
                     print(f"   │     └─ D={D:,} → k={k} ({reduction:.1f}x dim reduction), energy={energy:.4f}")
     
     # Validation and summary
