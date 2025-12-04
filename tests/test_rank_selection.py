@@ -3,7 +3,7 @@ Tests for rank selection in SVD basis construction.
 """
 import torch
 import pytest
-from src.svd_hybrid.basis import select_rank, compute_energy_spectrum
+from src.svd_hybrid.basis import select_rank, compute_energy_spectrum, compute_svd
 
 
 def test_rank_selection_basic():
@@ -75,6 +75,35 @@ def test_rank_selection_different_thresholds():
     
     # Higher threshold should need more components
     assert k_50 <= k_90 <= k_99
+
+
+def test_compute_svd_preserves_device():
+    """Test that compute_svd returns tensors on the same device as input."""
+    # Create a simple matrix on CPU
+    matrix = torch.randn(10, 4)
+    
+    # Compute SVD
+    U, S, Vh = compute_svd(matrix)
+    
+    # All results should be on CPU (same device as input)
+    assert U.device == matrix.device, f"U should be on {matrix.device}, got {U.device}"
+    assert S.device == matrix.device, f"S should be on {matrix.device}, got {S.device}"
+    assert Vh.device == matrix.device, f"Vh should be on {matrix.device}, got {Vh.device}"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_compute_svd_preserves_cuda_device():
+    """Test that compute_svd returns tensors on CUDA when input is on CUDA."""
+    # Create a simple matrix on CUDA
+    matrix = torch.randn(10, 4).cuda()
+    
+    # Compute SVD
+    U, S, Vh = compute_svd(matrix)
+    
+    # All results should be on CUDA (same device as input)
+    assert U.device == matrix.device, f"U should be on {matrix.device}, got {U.device}"
+    assert S.device == matrix.device, f"S should be on {matrix.device}, got {S.device}"
+    assert Vh.device == matrix.device, f"Vh should be on {matrix.device}, got {Vh.device}"
 
 
 if __name__ == "__main__":
