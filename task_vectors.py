@@ -142,7 +142,8 @@ class TaskVector:
         finetuned_checkpoint: Union[str, Dict[str, torch.Tensor]],
         task_name: Optional[str] = None,
         skip_int64: bool = True,
-        skip_uint8: bool = True
+        skip_uint8: bool = True,
+        verbose: bool = True
     ):
         """
         Initialize task vector from checkpoints.
@@ -156,6 +157,7 @@ class TaskVector:
             task_name: Optional name for this task (used in logging and combined names)
             skip_int64: Skip int64 parameters (typically buffers, not learnable)
             skip_uint8: Skip uint8 parameters (typically quantized or index tensors)
+            verbose: If True, print educational tutorial-style progress messages with validation
             
         Example:
             # From file paths
@@ -165,52 +167,233 @@ class TaskVector:
             >>> tv = TaskVector(base_state_dict, finetuned_state_dict)
         """
         self.task_name = task_name
+        self.verbose = verbose
+        
+        if self.verbose:
+            task_str = f" for task '{task_name}'" if task_name else ""
+            print(f"\n{'='*70}")
+            print(f"📚 TUTORIAL: Creating a Task Vector{task_str}")
+            print(f"{'='*70}")
+            print(f"""
+🎯 WHAT IS A TASK VECTOR?
+   A task vector captures what a model "learned" during fine-tuning.
+   It's simply the difference between fine-tuned and original weights:
+   
+   task_vector = fine_tuned_model - pretrained_model
+   
+   Think of it like this: if the pretrained model is a "blank slate",
+   the task vector represents the "knowledge" added during training.
+""")
         
         # Step 1: Load pretrained checkpoint
-        # Can accept either a file path (str) or an already-loaded state dict
         if isinstance(pretrained_checkpoint, str):
-            # Load from file, map to CPU to avoid GPU memory issues with large models
+            if self.verbose:
+                print(f"📂 STEP 1: Loading the Pretrained (Base) Model")
+                print(f"   └─ This is the original model before any task-specific training")
+                print(f"   └─ File: {pretrained_checkpoint}")
             pretrained_state = torch.load(pretrained_checkpoint, map_location='cpu', weights_only=False)
+            if self.verbose:
+                # Validation: Check if loaded successfully
+                if pretrained_state is not None:
+                    print(f"   ✅ VALIDATION PASSED: File loaded successfully")
+                else:
+                    print(f"   ❌ VALIDATION FAILED: File loaded but returned None")
         else:
+            if self.verbose:
+                print(f"📂 STEP 1: Using Provided Pretrained State Dict/Model")
+                print(f"   └─ The pretrained model/weights were passed directly")
             pretrained_state = pretrained_checkpoint
+            if self.verbose:
+                if pretrained_state is not None:
+                    # Check if it's a dict or model object
+                    if isinstance(pretrained_state, dict):
+                        if len(pretrained_state) > 0:
+                            print(f"   ✅ VALIDATION PASSED: State dict is valid and non-empty")
+                        else:
+                            print(f"   ⚠️ WARNING: State dict appears empty")
+                    elif hasattr(pretrained_state, 'state_dict'):
+                        print(f"   ✅ VALIDATION PASSED: Model object detected (will extract state dict)")
+                    else:
+                        print(f"   ✅ VALIDATION PASSED: Data received (will attempt extraction)")
+                else:
+                    print(f"   ⚠️ WARNING: Input appears to be None")
         
         # Step 2: Load finetuned checkpoint
         if isinstance(finetuned_checkpoint, str):
+            if self.verbose:
+                print(f"\n📂 STEP 2: Loading the Fine-tuned Model")
+                print(f"   └─ This is the model AFTER training on a specific task")
+                print(f"   └─ File: {finetuned_checkpoint}")
             finetuned_state = torch.load(finetuned_checkpoint, map_location='cpu', weights_only=False)
+            if self.verbose:
+                if finetuned_state is not None:
+                    print(f"   ✅ VALIDATION PASSED: File loaded successfully")
+                else:
+                    print(f"   ❌ VALIDATION FAILED: File loaded but returned None")
         else:
+            if self.verbose:
+                print(f"\n📂 STEP 2: Using Provided Fine-tuned State Dict/Model")
             finetuned_state = finetuned_checkpoint
+            if self.verbose:
+                if finetuned_state is not None:
+                    if isinstance(finetuned_state, dict):
+                        if len(finetuned_state) > 0:
+                            print(f"   ✅ VALIDATION PASSED: State dict is valid and non-empty")
+                        else:
+                            print(f"   ⚠️ WARNING: State dict appears empty")
+                    elif hasattr(finetuned_state, 'state_dict'):
+                        print(f"   ✅ VALIDATION PASSED: Model object detected (will extract state dict)")
+                    else:
+                        print(f"   ✅ VALIDATION PASSED: Data received (will attempt extraction)")
+                else:
+                    print(f"   ⚠️ WARNING: Input appears to be None")
         
-        # Step 3: Handle nested state dicts and model objects
-        # Extract state dict from various checkpoint formats including torch.nn.Module objects
+        # Step 3: Extract state dicts
+        if self.verbose:
+            print(f"\n🔍 STEP 3: Extracting Model Parameters")
+            print(f"   └─ Converting checkpoints to parameter dictionaries...")
+            print(f"   └─ (This handles various checkpoint formats: nested dicts, model objects, etc.)")
+        
         pretrained_state = _extract_state_dict(pretrained_state)
         finetuned_state = _extract_state_dict(finetuned_state)
         
-        # Step 4: Compute task vector (delta) for each parameter
+        if self.verbose:
+            pretrained_count = len(pretrained_state)
+            finetuned_count = len(finetuned_state)
+            print(f"   ├─ Pretrained model: {pretrained_count:,} parameters")
+            print(f"   └─ Fine-tuned model: {finetuned_count:,} parameters")
+            
+            # Validation: Check parameter counts match
+            if pretrained_count == finetuned_count:
+                print(f"   ✅ VALIDATION PASSED: Both models have same number of parameters")
+            elif pretrained_count > 0 and finetuned_count > 0:
+                overlap = len(set(pretrained_state.keys()) & set(finetuned_state.keys()))
+                print(f"   ⚠️ WARNING: Parameter counts differ ({pretrained_count} vs {finetuned_count})")
+                print(f"      └─ Overlapping parameters: {overlap:,} (will use these)")
+            else:
+                print(f"   ❌ VALIDATION FAILED: One or both models have no parameters!")
+        
+        # Step 4: Compute task vector (delta)
+        if self.verbose:
+            print(f"\n🧮 STEP 4: Computing the Task Vector (The Magic Step!)")
+            print(f"   └─ For each parameter: delta = fine_tuned_value - pretrained_value")
+            print(f"   └─ This tells us exactly what changed during training...")
+        
         self.vector = {}
+        skipped_count = 0
+        skipped_reasons = {"missing": 0, "dtype": 0, "shape": 0}
+        total_delta_norm = 0.0
+        max_delta_norm = 0.0
+        max_delta_param = ""
+        zero_delta_count = 0
+        
         for key in pretrained_state.keys():
-            # Skip parameters that don't exist in the finetuned model
-            # (indicates architecture mismatch or intentionally frozen layers)
             if key not in finetuned_state:
+                skipped_count += 1
+                skipped_reasons["missing"] += 1
                 continue
             
             pretrained_param = pretrained_state[key]
             finetuned_param = finetuned_state[key]
             
-            # Skip certain dtypes that typically aren't learnable parameters
-            # int64: Often used for buffer indices, position embeddings, etc.
-            # uint8: Often used for quantized weights or mask tensors
             if skip_int64 and pretrained_param.dtype == torch.int64:
+                skipped_count += 1
+                skipped_reasons["dtype"] += 1
                 continue
             if skip_uint8 and pretrained_param.dtype == torch.uint8:
+                skipped_count += 1
+                skipped_reasons["dtype"] += 1
                 continue
             
-            # Skip if shapes don't match (indicates incompatible architectures)
             if pretrained_param.shape != finetuned_param.shape:
+                skipped_count += 1
+                skipped_reasons["shape"] += 1
                 continue
             
-            # Compute the delta: what changed during fine-tuning
             delta = finetuned_param - pretrained_param
             self.vector[key] = delta
+            
+            delta_norm = delta.norm().item()
+            if delta_norm < 1e-10:
+                zero_delta_count += 1
+            total_delta_norm += delta_norm ** 2
+            if delta_norm > max_delta_norm:
+                max_delta_norm = delta_norm
+                max_delta_param = key
+        
+        total_delta_norm = total_delta_norm ** 0.5
+        
+        if self.verbose:
+            print(f"""
+   📊 COMPUTATION RESULTS:
+   ├─ Parameters processed: {len(self.vector):,}
+   ├─ Parameters skipped: {skipped_count}
+   │  ├─ Missing in fine-tuned: {skipped_reasons['missing']}
+   │  ├─ Wrong dtype (int64/uint8): {skipped_reasons['dtype']}
+   │  └─ Shape mismatch: {skipped_reasons['shape']}
+   ├─ Total change magnitude (L2 norm): {total_delta_norm:.6f}
+   ├─ Max single-param change: {max_delta_norm:.6f}
+   │  └─ In parameter: {max_delta_param[:50]}{'...' if len(max_delta_param) > 50 else ''}
+   └─ Parameters with zero change: {zero_delta_count}
+""")
+            
+            # Validation checks
+            print(f"   🔬 VALIDATION CHECKS:")
+            
+            # Check 1: Did we get any parameters?
+            if len(self.vector) > 0:
+                print(f"   ✅ CHECK 1 PASSED: Task vector has {len(self.vector):,} parameters")
+            else:
+                print(f"   ❌ CHECK 1 FAILED: No parameters in task vector!")
+            
+            # Check 2: Is there actual change?
+            if total_delta_norm > 1e-10:
+                print(f"   ✅ CHECK 2 PASSED: Model weights actually changed (norm={total_delta_norm:.6f})")
+            else:
+                print(f"   ❌ CHECK 2 FAILED: No weight changes detected! Models may be identical.")
+            
+            # Check 3: Are most parameters non-zero?
+            non_zero_ratio = (len(self.vector) - zero_delta_count) / max(len(self.vector), 1)
+            if non_zero_ratio > 0.5:
+                print(f"   ✅ CHECK 3 PASSED: {non_zero_ratio*100:.1f}% of parameters have non-zero changes")
+            elif non_zero_ratio > 0:
+                print(f"   ⚠️ CHECK 3 WARNING: Only {non_zero_ratio*100:.1f}% of parameters changed (sparse update)")
+            else:
+                print(f"   ❌ CHECK 3 FAILED: All parameters have zero change!")
+            
+            # Check 4: Sanity check on magnitude
+            if 1e-6 < total_delta_norm < 1e6:
+                print(f"   ✅ CHECK 4 PASSED: Change magnitude is in reasonable range")
+            elif total_delta_norm >= 1e6:
+                print(f"   ⚠️ CHECK 4 WARNING: Very large changes detected - may indicate issue")
+            else:
+                print(f"   ⚠️ CHECK 4 WARNING: Very small changes - fine-tuning may have had minimal effect")
+            
+            # Verification: Can we reconstruct?
+            print(f"""
+   🧪 QUICK VERIFICATION TEST:
+   └─ Testing: pretrained + task_vector ≈ fine_tuned ?""")
+            
+            # Pick a random parameter to verify
+            if len(self.vector) > 0:
+                test_key = list(self.vector.keys())[0]
+                reconstructed = pretrained_state[test_key] + self.vector[test_key]
+                original_finetuned = finetuned_state[test_key]
+                reconstruction_error = (reconstructed - original_finetuned).abs().max().item()
+                
+                if reconstruction_error < 1e-5:
+                    print(f"      ✅ VERIFIED: Reconstruction error = {reconstruction_error:.2e} (perfect!)")
+                else:
+                    print(f"      ❌ ERROR: Reconstruction error = {reconstruction_error:.2e} (unexpected!)")
+            
+            print(f"""
+   💡 WHAT CAN YOU DO WITH THIS TASK VECTOR?
+   • Add it to another model to transfer this task's knowledge
+   • Combine with other task vectors for multi-task learning
+   • Scale it (multiply by 0.5) to reduce the effect
+   • Subtract it to "forget" what was learned
+""")
+            print(f"{'='*70}\n")
     
     def __add__(self, other: 'TaskVector') -> 'TaskVector':
         """
@@ -300,7 +483,7 @@ class TaskVector:
         """
         return self.__mul__(scalar)
     
-    def apply_to(self, pretrained_checkpoint: Union[str, Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+    def apply_to(self, pretrained_checkpoint: Union[str, Dict[str, torch.Tensor]], verbose: bool = None) -> Dict[str, torch.Tensor]:
         """
         Apply task vector to pretrained model to get finetuned model.
         
@@ -313,6 +496,7 @@ class TaskVector:
         
         Args:
             pretrained_checkpoint: Path to checkpoint or state dict of pretrained model
+            verbose: Override instance verbose setting for this call
             
         Returns:
             State dict with task vector applied (approximates the fine-tuned model)
@@ -327,27 +511,126 @@ class TaskVector:
             >>> tv_merged = tv1 * 0.5 + tv2 * 0.5
             >>> merged_model = tv_merged.apply_to("base.pt")
         """
+        # Use instance verbose setting if not overridden
+        _verbose = verbose if verbose is not None else getattr(self, 'verbose', False)
+        
+        if _verbose:
+            task_str = f" ({self.task_name})" if self.task_name else ""
+            print(f"\n{'='*70}")
+            print(f"📚 TUTORIAL: Applying Task Vector{task_str} to Base Model")
+            print(f"{'='*70}")
+            print(f"""
+🎯 WHAT DOES "APPLYING" A TASK VECTOR MEAN?
+   We're reconstructing a model by adding the learned changes back:
+   
+   new_model = base_model + task_vector
+   
+   This creates a model that has the capabilities of the task(s)
+   represented by the task vector.
+""")
+        
         # Load pretrained checkpoint
         if isinstance(pretrained_checkpoint, str):
+            if _verbose:
+                print(f"📂 STEP 1: Loading Base Model")
+                print(f"   └─ File: {pretrained_checkpoint}")
             pretrained_state = torch.load(pretrained_checkpoint, map_location='cpu', weights_only=False)
+            if _verbose:
+                print(f"   ✅ LOADED: File loaded successfully")
         else:
+            if _verbose:
+                print(f"📂 STEP 1: Using Provided Base Model State Dict")
             pretrained_state = pretrained_checkpoint
         
         # Extract state dict from various checkpoint formats including torch.nn.Module objects
         pretrained_state = _extract_state_dict(pretrained_state)
         
+        if _verbose:
+            print(f"   └─ Base model has {len(pretrained_state):,} parameters")
+        
         # Make a copy to avoid modifying the input (only clone tensors)
+        if _verbose:
+            print(f"\n🔄 STEP 2: Creating Copy of Base Model")
+            print(f"   └─ (We don't want to modify the original)")
         pretrained_state = {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in pretrained_state.items()}
+        if _verbose:
+            print(f"   ✅ DONE: Safe copy created")
         
         # Apply task vector to each parameter
+        if _verbose:
+            print(f"\n🧮 STEP 3: Applying Task Vector (Adding Deltas)")
+            print(f"   └─ For each parameter: new_value = base_value + delta")
+        
         result_state = {}
+        applied_count = 0
+        unchanged_count = 0
+        total_change_norm = 0.0
+        
         for key in pretrained_state.keys():
             if key in self.vector:
                 # Add delta to pretrained: finetuned = pretrained + delta
                 result_state[key] = pretrained_state[key] + self.vector[key]
+                applied_count += 1
+                total_change_norm += self.vector[key].norm().item() ** 2
             else:
                 # Keep pretrained value for parameters not in task vector
                 result_state[key] = pretrained_state[key]
+                unchanged_count += 1
+        
+        total_change_norm = total_change_norm ** 0.5
+        
+        if _verbose:
+            print(f"""
+   📊 APPLICATION RESULTS:
+   ├─ Parameters modified: {applied_count:,}
+   ├─ Parameters unchanged: {unchanged_count:,}
+   └─ Total modification magnitude: {total_change_norm:.6f}
+""")
+            
+            # Validation checks
+            print(f"   🔬 VALIDATION CHECKS:")
+            
+            # Check 1: All parameters accounted for
+            total_params = applied_count + unchanged_count
+            if total_params == len(pretrained_state):
+                print(f"   ✅ CHECK 1 PASSED: All {total_params:,} parameters accounted for")
+            else:
+                print(f"   ❌ CHECK 1 FAILED: Parameter count mismatch!")
+            
+            # Check 2: Output has correct structure
+            if len(result_state) == len(pretrained_state):
+                print(f"   ✅ CHECK 2 PASSED: Output has same number of parameters as input")
+            else:
+                print(f"   ❌ CHECK 2 FAILED: Output parameter count differs from input!")
+            
+            # Check 3: At least some parameters were modified
+            if applied_count > 0:
+                print(f"   ✅ CHECK 3 PASSED: {applied_count:,} parameters were updated")
+            else:
+                print(f"   ⚠️ CHECK 3 WARNING: No parameters were modified (empty task vector?)")
+            
+            # Verification test
+            if applied_count > 0:
+                print(f"""
+   🧪 VERIFICATION TEST:
+   └─ Checking: result = base + delta ?""")
+                test_key = list(self.vector.keys())[0]
+                expected = pretrained_state[test_key] + self.vector[test_key]
+                actual = result_state[test_key]
+                verification_error = (expected - actual).abs().max().item()
+                
+                if verification_error < 1e-6:
+                    print(f"      ✅ VERIFIED: Computation is correct (error={verification_error:.2e})")
+                else:
+                    print(f"      ❌ ERROR: Unexpected computation error={verification_error:.2e}")
+            
+            print(f"""
+   💡 WHAT'S NEXT?
+   • Load this state dict into your model: model.load_state_dict(result)
+   • Run inference or evaluation to test the merged model
+   • Compare performance against the original fine-tuned models
+""")
+            print(f"{'='*70}\n")
         
         return result_state
 

@@ -56,7 +56,8 @@ from typing import Tuple, Dict
 
 def absmax_quantization(
     X: torch.Tensor,
-    qbit: int = 8
+    qbit: int = 8,
+    verbose: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Absmax quantization (symmetric, signed).
@@ -84,6 +85,7 @@ def absmax_quantization(
     Args:
         X: Input tensor to quantize (any shape, will be processed element-wise)
         qbit: Number of bits (8 or 16) - determines integer type and range
+        verbose: If True, print educational tutorial-style progress messages
         
     Returns:
         Tuple of:
@@ -98,26 +100,52 @@ def absmax_quantization(
         >>> X_q.min() >= -128 and X_q.max() <= 127
         True
     """
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"📚 TUTORIAL: Absmax (Symmetric) Quantization")
+        print(f"{'='*70}")
+        print(f"""
+🎯 WHAT IS QUANTIZATION?
+   Quantization compresses data by converting high-precision floats (32-bit)
+   to low-precision integers ({qbit}-bit). This saves memory at the cost of
+   some precision loss.
+   
+   ABSMAX (Symmetric) Quantization:
+   • Uses SIGNED integers (can represent negative numbers directly)
+   • Maps the range [-max|X|, +max|X|] to [{-2**(qbit-1)}, {2**(qbit-1)-1}]
+   • Best for data centered around zero (like neural network weights)
+""")
+    
     # Handle edge case: empty tensor
-    # Return zeros with a scale of 1.0 to avoid division issues during dequantization
     if X.numel() == 0:
+        if verbose:
+            print(f"   ⚠️ Empty tensor detected, returning zeros")
         return torch.zeros_like(X, dtype=torch.int8 if qbit == 8 else torch.int16), torch.tensor(1.0)
     
-    # Step 1: Compute the absolute maximum value in the tensor
-    # This determines the "range" of our data that we need to map to integers
+    if verbose:
+        print(f"📊 INPUT ANALYSIS:")
+        print(f"   └─ Tensor shape: {list(X.shape)}")
+        print(f"   └─ Total elements: {X.numel():,}")
+        print(f"   └─ Data type: {X.dtype}")
+        print(f"   └─ Value range: [{X.min().item():.6f}, {X.max().item():.6f}]")
+        print(f"   └─ Mean: {X.mean().item():.6f}, Std: {X.std().item():.6f}")
+    
+    # Step 1: Compute the absolute maximum value
     abs_max = X.abs().max()
     
+    if verbose:
+        print(f"\n🔢 STEP 1: Find Maximum Absolute Value")
+        print(f"   └─ abs_max = max(|X|) = {abs_max.item():.6f}")
+    
     # Handle edge case: all values are essentially zero
-    # Avoid division by very small numbers which could cause numerical instability
     if abs_max < 1e-10:
+        if verbose:
+            print(f"   ⚠️ All values near zero, returning zeros with scale=1.0")
         scale = torch.tensor(1.0, device=X.device)
         quantized = torch.zeros_like(X, dtype=torch.int8 if qbit <= 8 else torch.int16)
         return quantized, scale
     
-    # Step 2: Determine the quantization range based on bit width
-    # For signed integers:
-    #   - 8-bit int8:  -128 to 127 (2^7 - 1 = 127 for positive, -2^7 = -128 for negative)
-    #   - 16-bit int16: -32768 to 32767
+    # Step 2: Determine the quantization range
     if qbit == 8:
         qmin, qmax = -128, 127
         dtype = torch.int8
@@ -127,22 +155,70 @@ def absmax_quantization(
     else:
         raise ValueError(f"Unsupported qbit: {qbit}, must be 8 or 16 for signed quantization")
     
+    if verbose:
+        print(f"\n🔢 STEP 2: Determine Quantization Range")
+        print(f"   └─ {qbit}-bit signed integers: [{qmin}, {qmax}]")
+        print(f"   └─ Total quantization levels: {2**qbit}")
+    
     # Step 3: Compute the scale factor
-    # The scale maps the range [-abs_max, abs_max] to [-127, 127] (for 8-bit)
-    # scale = abs_max / qmax, so X / scale gives values in [-qmax, qmax]
     scale = abs_max / qmax
     
-    # Step 4: Quantize by dividing by scale and rounding to nearest integer
-    # Then clamp to ensure we stay within valid range (handles rounding edge cases)
+    if verbose:
+        print(f"\n🔢 STEP 3: Compute Scale Factor")
+        print(f"   └─ scale = abs_max / qmax = {abs_max.item():.6f} / {qmax} = {scale.item():.8f}")
+        print(f"   └─ Each integer step represents {scale.item():.8f} in original units")
+    
+    # Step 4: Quantize
     quantized = torch.clamp(torch.round(X / scale), qmin, qmax)
     quantized = quantized.to(dtype)
+    
+    if verbose:
+        print(f"\n🔢 STEP 4: Apply Quantization")
+        print(f"   └─ Formula: X_q = clamp(round(X / scale), {qmin}, {qmax})")
+        print(f"   └─ Output dtype: {quantized.dtype}")
+        print(f"   └─ Output range: [{quantized.min().item()}, {quantized.max().item()}]")
+        
+        # Validation: Check reconstruction quality
+        X_reconstructed = quantized.float() * scale
+        error = (X - X_reconstructed).abs()
+        relative_error = error.sum().item() / (X.abs().sum().item() + 1e-10)
+        max_error = error.max().item()
+        
+        print(f"""
+   🔬 VALIDATION - RECONSTRUCTION QUALITY:
+   ├─ Max absolute error: {max_error:.8f}
+   ├─ Relative L1 error: {relative_error*100:.4f}%
+   └─ Theoretical max error: {scale.item()/2:.8f} (half a quantization step)
+""")
+        
+        # Quality assessment
+        if relative_error < 0.01:
+            print(f"   ✅ QUALITY CHECK PASSED: Excellent (<1% error)")
+        elif relative_error < 0.05:
+            print(f"   ✅ QUALITY CHECK PASSED: Good (<5% error)")
+        elif relative_error < 0.10:
+            print(f"   ⚠️ QUALITY CHECK WARNING: Moderate error (5-10%)")
+        else:
+            print(f"   ❌ QUALITY CHECK CONCERN: High error (>10%) - consider more bits")
+        
+        # Compression ratio
+        original_bits = 32  # float32
+        compression = original_bits / qbit
+        print(f"""
+   📦 COMPRESSION ACHIEVED:
+   ├─ Original: {X.numel() * 4:,} bytes (float32)
+   ├─ Quantized: {X.numel() * qbit // 8:,} bytes ({qbit}-bit) + 4 bytes (scale)
+   └─ Compression ratio: {compression:.1f}x
+""")
+        print(f"{'='*70}\n")
     
     return quantized, scale
 
 
 def asymmetric_quantization(
     X: torch.Tensor,
-    qbit: int = 8
+    qbit: int = 8,
+    verbose: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Asymmetric quantization (min-max, unsigned).
@@ -181,6 +257,7 @@ def asymmetric_quantization(
     Args:
         X: Input tensor to quantize (any shape)
         qbit: Number of bits (1-8 for uint8 storage)
+        verbose: If True, print educational tutorial-style progress messages
         
     Returns:
         Tuple of:
@@ -196,56 +273,150 @@ def asymmetric_quantization(
         >>> # Dequantize
         >>> X_recon = (X_q.float() - zero_point) / scale
     """
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"📚 TUTORIAL: Asymmetric (Min-Max) Quantization")
+        print(f"{'='*70}")
+        print(f"""
+🎯 WHAT IS ASYMMETRIC QUANTIZATION?
+   Unlike symmetric (absmax), asymmetric quantization:
+   • Uses UNSIGNED integers (0 to {2**qbit - 1})
+   • Maps [min(X), max(X)] to [0, {2**qbit - 1}]
+   • Has a "zero point" to handle non-zero data ranges
+   • Better for data that isn't centered around zero
+   
+   This is the method used in Task Vector Quantization (TVQ).
+""")
+    
     # Handle edge case: empty tensor
     if X.numel() == 0:
+        if verbose:
+            print(f"   ⚠️ Empty tensor detected, returning zeros")
         return torch.zeros_like(X, dtype=torch.uint8), torch.tensor(1.0), torch.tensor(0.0)
     
-    # Step 1: Find the minimum and maximum values in the tensor
-    # These define the range of values we need to map to integers
+    if verbose:
+        print(f"📊 INPUT ANALYSIS:")
+        print(f"   └─ Tensor shape: {list(X.shape)}")
+        print(f"   └─ Total elements: {X.numel():,}")
+        print(f"   └─ Value range: [{X.min().item():.6f}, {X.max().item():.6f}]")
+        print(f"   └─ Mean: {X.mean().item():.6f}, Std: {X.std().item():.6f}")
+        
+        # Check if data is centered
+        mean = X.mean().item()
+        if abs(mean) < 0.1 * X.std().item():
+            print(f"   └─ Data appears centered around zero (absmax might work too)")
+        else:
+            print(f"   └─ Data is NOT centered around zero (good choice for asymmetric!)")
+    
+    # Step 1: Find min and max
     X_min = X.min()
     X_max = X.max()
     
-    # Handle edge case: constant tensor (all values are the same)
-    # When X_max == X_min, we can't compute a meaningful scale
+    if verbose:
+        print(f"\n🔢 STEP 1: Find Data Range")
+        print(f"   └─ X_min = {X_min.item():.6f}")
+        print(f"   └─ X_max = {X_max.item():.6f}")
+        print(f"   └─ Range = {(X_max - X_min).item():.6f}")
+    
+    # Handle edge case: constant tensor
     if (X_max - X_min).abs() < 1e-8:
+        if verbose:
+            print(f"   ⚠️ Constant tensor detected (all values same), returning zeros")
         scale = torch.tensor(1.0, device=X.device)
         zero_point = torch.tensor(0.0, device=X.device)
         quantized = torch.zeros_like(X, dtype=torch.uint8)
         return quantized, scale, zero_point
     
-    # Step 2: Determine quantization levels based on bit width
-    # n_levels = 2^qbit gives us the number of distinct quantized values
-    # For 8 bits: 256 levels (0-255)
-    # For 4 bits: 16 levels (0-15)
+    # Step 2: Determine quantization levels
     n_levels = 2 ** qbit
     qmin = 0
     qmax = n_levels - 1
     
-    # Step 3: Compute scale following TVQ reference implementation
-    # scale maps the original range [X_min, X_max] to [qmin, qmax]
-    # Formula: scale = (qmax - qmin) / (X_max - X_min)
-    # This tells us "how many quantization levels per unit of original value"
+    if verbose:
+        print(f"\n🔢 STEP 2: Determine Quantization Levels")
+        print(f"   └─ {qbit}-bit unsigned integers: [0, {qmax}]")
+        print(f"   └─ Total quantization levels: {n_levels}")
+    
+    # Step 3: Compute scale
     scale = (qmax - qmin) / (X_max - X_min)
     
-    # Step 4: Compute zero point
-    # The zero point is the quantized value that represents X_min
-    # Formula: zero_point = -round(scale * X_min)
-    # This ensures X_min maps to 0 (or close to it)
-    zero_point = -torch.round(scale * X_min)
+    if verbose:
+        print(f"\n🔢 STEP 3: Compute Scale Factor")
+        print(f"   └─ scale = {qmax} / (X_max - X_min)")
+        print(f"   └─ scale = {qmax} / {(X_max - X_min).item():.6f} = {scale.item():.8f}")
     
-    # Clamp zero_point to valid range to handle numerical edge cases
+    # Step 4: Compute zero point
+    zero_point = -torch.round(scale * X_min)
     zero_point = torch.clamp(zero_point, qmin, qmax)
     
-    # Step 5: Quantize the tensor
-    # Formula: X_q = round(scale * X + zero_point)
-    # This transforms: X_min -> ~0, X_max -> ~255 (for 8-bit)
+    if verbose:
+        print(f"\n🔢 STEP 4: Compute Zero Point")
+        print(f"   └─ zero_point = -round(scale × X_min)")
+        print(f"   └─ zero_point = -round({scale.item():.6f} × {X_min.item():.6f}) = {zero_point.item():.1f}")
+        print(f"   └─ This means: X_min maps to approximately 0")
+    
+    # Step 5: Quantize
     quantized = torch.round(scale * X + zero_point)
-    
-    # Clamp to ensure all values are in valid range
     quantized = torch.clamp(quantized, qmin, qmax)
-    
-    # Convert to uint8 for storage efficiency
     quantized = quantized.to(torch.uint8)
+    
+    if verbose:
+        print(f"\n🔢 STEP 5: Apply Quantization")
+        print(f"   └─ Formula: X_q = clamp(round(scale × X + zero_point), 0, {qmax})")
+        print(f"   └─ Output dtype: {quantized.dtype}")
+        print(f"   └─ Output range: [{quantized.min().item()}, {quantized.max().item()}]")
+        
+        # Validation: Check reconstruction quality
+        X_reconstructed = (quantized.float() - zero_point) / scale
+        error = (X - X_reconstructed).abs()
+        relative_error = error.sum().item() / (X.abs().sum().item() + 1e-10)
+        max_error = error.max().item()
+        
+        print(f"""
+   🔬 VALIDATION - RECONSTRUCTION QUALITY:
+   ├─ To reconstruct: X_recon = (X_q - zero_point) / scale
+   ├─ Max absolute error: {max_error:.8f}
+   ├─ Relative L1 error: {relative_error*100:.4f}%
+   └─ Theoretical max error: {(1.0/scale.item())/2:.8f} (half a quantization step)
+""")
+        
+        # Verification test
+        test_idx = 0
+        original_val = X.flatten()[test_idx].item()
+        quant_val = quantized.flatten()[test_idx].item()
+        recon_val = (quant_val - zero_point.item()) / scale.item()
+        
+        print(f"   🧪 SAMPLE VERIFICATION (first element):")
+        print(f"      Original: {original_val:.6f}")
+        print(f"      Quantized: {quant_val}")
+        print(f"      Reconstructed: {recon_val:.6f}")
+        print(f"      Error: {abs(original_val - recon_val):.8f}")
+        
+        if abs(original_val - recon_val) < 0.1:
+            print(f"      ✅ VERIFIED: Reconstruction is close to original")
+        else:
+            print(f"      ⚠️ NOTE: Some precision lost (expected with {qbit}-bit)")
+        
+        # Quality assessment
+        if relative_error < 0.01:
+            print(f"\n   ✅ QUALITY CHECK PASSED: Excellent (<1% error)")
+        elif relative_error < 0.05:
+            print(f"\n   ✅ QUALITY CHECK PASSED: Good (<5% error)")
+        elif relative_error < 0.10:
+            print(f"\n   ⚠️ QUALITY CHECK WARNING: Moderate error (5-10%)")
+        else:
+            print(f"\n   ❌ QUALITY CHECK CONCERN: High error (>10%) - consider more bits")
+        
+        # Compression ratio
+        original_bits = 32  # float32
+        compression = original_bits / qbit
+        print(f"""
+   📦 COMPRESSION ACHIEVED:
+   ├─ Original: {X.numel() * 4:,} bytes (float32)
+   ├─ Quantized: {X.numel() * qbit // 8:,} bytes ({qbit}-bit) + 8 bytes (scale, zp)
+   └─ Compression ratio: {compression:.1f}x
+""")
+        print(f"{'='*70}\n")
     
     return quantized, scale, zero_point
 
