@@ -119,7 +119,7 @@ def compress_single_task(
     Args:
         task_delta: Task delta vector [D]
         U_high: High-energy basis [D × k]
-        U_low: Low-energy basis [D × (N-k)] where N is the number of tasks
+        U_low: Low-energy basis [D × (D-k)]
         quantizer: RTVQ quantizer instance
         device: Device for computation
         mean: Optional mean vector [D] or [D × 1] to subtract before projection.

@@ -165,9 +165,9 @@ def reconstruct_from_coefficients(
     
     Args:
         avg_c_high: Averaged high coefficients [k]
-        avg_c_low: Averaged low coefficients [N-k] where N is number of tasks
+        avg_c_low: Averaged low coefficients [D-k]
         U_high: High-energy basis [D × k]
-        U_low: Low-energy basis [D × (N-k)]
+        U_low: Low-energy basis [D × (D-k)]
         device: Device for computation
         mean: Optional mean vector [D] or [D × 1] to add after reconstruction.
             If the SVD basis was constructed with centering (svd_center=True),
