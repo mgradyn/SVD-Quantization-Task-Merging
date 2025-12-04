@@ -146,7 +146,8 @@ def reconstruct_from_coefficients(
     avg_c_low: torch.Tensor,
     U_high: torch.Tensor,
     U_low: torch.Tensor,
-    device: str = "cpu"
+    device: str = "cpu",
+    mean: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
     """
     Reconstruct delta from averaged coefficients.
@@ -156,10 +157,11 @@ def reconstruct_from_coefficients(
     
     === FORMULA ===
     
-    delta = U_high × c_high + U_low × c_low
-         = [D × k] × [k] + [D × (D-k)] × [D-k]
-         = [D] + [D]
-         = [D]
+    If SVD was built WITHOUT centering:
+        delta = U_high × c_high + U_low × c_low
+    
+    If SVD was built WITH centering (mean subtracted):
+        delta = U_high × c_high + U_low × c_low + mean
     
     Args:
         avg_c_high: Averaged high coefficients [k]
@@ -167,6 +169,9 @@ def reconstruct_from_coefficients(
         U_high: High-energy basis [D × k]
         U_low: Low-energy basis [D × (D-k)]
         device: Device for computation
+        mean: Optional mean vector [D] or [D × 1] to add after reconstruction.
+            If the SVD basis was constructed with centering (svd_center=True),
+            this mean must be provided for correct reconstruction.
         
     Returns:
         Reconstructed delta vector [D]
@@ -175,11 +180,18 @@ def reconstruct_from_coefficients(
     U_high_f = U_high.to(device).float()
     U_low_f = U_low.to(device).float()
     
-    # Reconstruct: delta = U × c
+    # Reconstruct: delta_centered = U × c
     part_high = U_high_f @ avg_c_high  # [D]
     part_low = U_low_f @ avg_c_low      # [D]
     
-    return part_high + part_low
+    reconstructed = part_high + part_low
+    
+    # Add mean back if provided (for centered SVD basis)
+    if mean is not None:
+        mean_vec = mean.squeeze().to(device).float()  # Handle both [D] and [D x 1] shapes
+        reconstructed = reconstructed + mean_vec
+    
+    return reconstructed
 
 
 def merge_parameter(
@@ -200,7 +212,7 @@ def merge_parameter(
     Args:
         param_name: Parameter name
         compressed_params: Compressed coefficients for this parameter
-        basis: Basis for this parameter
+        basis: Basis for this parameter (may contain "mean" if centering was used)
         weights: Task weights
         quantizer: RTVQ quantizer
         original_shape: Original parameter shape
@@ -217,6 +229,9 @@ def merge_parameter(
     # Merge masked region
     basis_masked = basis.get("masked")
     if basis_masked is not None:
+        # Extract mean if present (for centered SVD basis)
+        mean_masked = basis_masked.get("mean")
+        
         avg_c_high_masked, avg_c_low_masked = dequantize_and_average(
             compressed_params,
             weights,
@@ -231,7 +246,8 @@ def merge_parameter(
                 avg_c_low_masked,
                 basis_masked["U_high"],
                 basis_masked["U_low"],
-                device=device
+                device=device,
+                mean=mean_masked
             )
         else:
             merged_masked = None
@@ -243,6 +259,9 @@ def merge_parameter(
     if include_noise:
         basis_unmasked = basis.get("noise")
         if basis_unmasked is not None:
+            # Extract mean if present (for centered SVD basis)
+            mean_unmasked = basis_unmasked.get("mean")
+            
             avg_c_high_unmasked, avg_c_low_unmasked = dequantize_and_average(
                 compressed_params,
                 weights,
@@ -257,7 +276,8 @@ def merge_parameter(
                     avg_c_low_unmasked,
                     basis_unmasked["U_high"],
                     basis_unmasked["U_low"],
-                    device=device
+                    device=device,
+                    mean=mean_unmasked
                 )
                 
                 # Apply noise shrinkage
