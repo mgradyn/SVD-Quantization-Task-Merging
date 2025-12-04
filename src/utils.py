@@ -45,12 +45,19 @@ def torch_load_old(save_path, device=None):
         classifier = classifier.to(device)
     return classifier
 
-
 def torch_save(model, save_path):
     if os.path.dirname(save_path) != '':
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    torch.save(model.cpu(), save_path)
 
+    try:
+        # Try moving to CUDA
+        model_to_save = model.cuda()
+    except (AssertionError, RuntimeError, AttributeError) as e:
+        # Fallback to CPU if CUDA fails (e.g., no GPU, OOM, or logic error)
+        warnings.warn(f"Failed to move model to CUDA. Saving on CPU instead. Error: {e}")
+        model_to_save = model.cpu()
+
+    torch.save(model_to_save, save_path)
 
 def torch_load(save_path, device=None):
     model = torch.load(save_path)
