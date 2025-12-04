@@ -290,6 +290,16 @@ def construct_basis(
     
     # Compute SVD
     U, S, Vh = compute_svd(T, full_matrices=False, use_randomized=use_randomized)
+
+    # log
+    sv = S.cpu().numpy()
+    energy = sv**2
+    cum = energy.cumsum() / energy.sum() if energy.sum() > 0 else np.ones_like(energy)
+    print("param_name:", param_name, "shape DxN:", D, "x", N)
+    print("singular values:", sv)
+    print("cumulative energy:", cum)
+    print("selected k:", select_rank(S, energy_threshold=0.95, max_rank=max_rank))
+    # log
     
     # Select rank
     k = select_rank(S, energy_threshold, max_rank)
