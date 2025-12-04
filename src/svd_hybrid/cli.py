@@ -63,7 +63,7 @@ from .basis import construct_masked_basis
 from .compress import compress_all_parameters
 from .merge import merge_all_parameters, apply_merged_deltas, merge_with_clustering
 from .storage import save_all_artifacts, save_merged_model
-from .diagnostics import compute_all_diagnostics, print_diagnostics_summary
+from .diagnostics import compute_all_diagnostics, print_diagnostics_summary, compute_compression_statistics, print_detailed_compression_report
 from .weighting import compute_weights
 from .clustering import cluster_tasks
 from .mask_loader import apply_mask_to_tensor, get_unmasked_portion
@@ -275,10 +275,44 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
       • Center data: {config.svd_center}
 """)
     
+    # Print mathematical overview for SVD
+    print(f"""
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          SVD MATHEMATICAL PROCESS                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  📐 FOR EACH PARAMETER (weight matrix/bias vector):                         │
+│                                                                              │
+│  Step 1: Stack task deltas into matrix T                                    │
+│          T = [δ₁ | δ₂ | ... | δₙ] ∈ ℝ^(D×N)                                │
+│          where D = flattened parameter dimension                            │
+│                N = number of tasks ({len(config.tasks)})                                 │
+│                                                                              │
+│  Step 2: Center the data (optional, enabled: {config.svd_center})                         │
+│          T_centered = T - mean(T, axis=1)                                   │
+│                                                                              │
+│  Step 3: Compute SVD decomposition                                          │
+│          T = U × Σ × Vᵀ                                                     │
+│          • U ∈ ℝ^(D×D): Left singular vectors (basis directions)           │
+│          • Σ = diag(σ₁, σ₂, ..., σₘ): Singular values (importance)         │
+│          • Vᵀ ∈ ℝ^(N×N): Right singular vectors                            │
+│                                                                              │
+│  Step 4: Select rank k based on energy threshold ({config.svd_energy_threshold})               │
+│          Find smallest k such that:                                         │
+│          (σ₁² + σ₂² + ... + σₖ²) / (σ₁² + σ₂² + ... + σₘ²) ≥ {config.svd_energy_threshold}         │
+│                                                                              │
+│  Step 5: Split basis                                                        │
+│          U_high = U[:, :k]   → Top k directions (high energy)              │
+│          U_low = U[:, k:]    → Remaining directions (low energy)           │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+""")
+    
     bases = {}
     successful_bases = 0
     total_energy_retained = 0
     ranks_selected = []
+    dimensions = []
     
     for i, param_name in enumerate(param_names):
         # Extract masked and unmasked deltas
@@ -332,26 +366,51 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
                 successful_bases += 1
                 total_energy_retained += basis['masked']['energy_retained']
                 ranks_selected.append(basis['masked']['k'])
+                dimensions.append(basis['masked']['D'])
                 
-                # Print progress for significant parameters
+                # Print progress for significant parameters with more detail
                 if i < 5 or i % 50 == 0:
-                    print(f"   ├─ {param_name[:40]}{'...' if len(param_name) > 40 else ''}: "
-                          f"rank={basis['masked']['k']}, energy={basis['masked']['energy_retained']:.4f}")
+                    k = basis['masked']['k']
+                    D = basis['masked']['D']
+                    energy = basis['masked']['energy_retained']
+                    reduction = D / k if k > 0 else float('inf')
+                    print(f"   ├─ {param_name[:35]}{'...' if len(param_name) > 35 else '':<5}")
+                    print(f"   │     └─ D={D:,} → k={k} ({reduction:.1f}x dim reduction), energy={energy:.4f}")
     
     # Validation and summary
     avg_energy = total_energy_retained / max(successful_bases, 1)
     avg_rank = sum(ranks_selected) / max(len(ranks_selected), 1)
+    avg_dim = sum(dimensions) / max(len(dimensions), 1)
+    total_original_dim = sum(dimensions)
+    total_compressed_dim = sum(ranks_selected)
     
-    print(f"\n   📊 SVD BASIS SUMMARY:")
-    print(f"      └─ Bases constructed: {successful_bases}/{len(param_names)}")
-    print(f"      └─ Average energy retained: {avg_energy:.4f} ({avg_energy*100:.1f}%)")
-    print(f"      └─ Average rank selected: {avg_rank:.1f}")
-    print(f"      └─ Rank range: [{min(ranks_selected) if ranks_selected else 0}, {max(ranks_selected) if ranks_selected else 0}]")
-    
-    if avg_energy >= config.svd_energy_threshold - 0.05:
-        print(f"   ✅ VALIDATION: Energy threshold met (target: {config.svd_energy_threshold})")
-    else:
-        print(f"   ⚠️ WARNING: Average energy below threshold (got {avg_energy:.4f}, target {config.svd_energy_threshold})")
+    print(f"""
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           SVD BASIS CONSTRUCTION SUMMARY                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  📊 CONSTRUCTION RESULTS:                                                   │
+│     Bases constructed: {successful_bases}/{len(param_names)} parameters                              │
+│     Total dimension (Σ D): {total_original_dim:,} elements                              │
+│     Total rank (Σ k): {total_compressed_dim:,} elements                                  │
+│     Dimensionality reduction: {total_original_dim/max(total_compressed_dim,1):.1f}x                                     │
+│                                                                              │
+│  📈 RANK STATISTICS:                                                        │
+│     Average rank k: {avg_rank:.1f}                                              │
+│     Rank range: [{min(ranks_selected) if ranks_selected else 0}, {max(ranks_selected) if ranks_selected else 0}]                                                │
+│     Average dimension D: {avg_dim:.1f}                                          │
+│                                                                              │
+│  ⚡ ENERGY RETENTION:                                                        │
+│     Target threshold: {config.svd_energy_threshold*100:.1f}%                                           │
+│     Achieved average: {avg_energy*100:.2f}%                                          │
+│     Status: {'✅ Target met' if avg_energy >= config.svd_energy_threshold - 0.05 else '⚠️ Below target'}                                              │
+│                                                                              │
+│  💾 BASIS STORAGE FORMAT:                                                    │
+│     U_high: {'FP16' if config.svd_fp16 else 'FP32'} (2 bytes/value) - High energy directions         │
+│     U_low: {'FP16' if config.svd_fp16 else 'FP32'} (2 bytes/value) - Low energy directions          │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+""")
     
     # =========================================================================
     # Step 5: Compress task vectors
@@ -383,12 +442,14 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
     
     print(f"   ✅ COMPRESSED: {len(compressed_all)} parameters")
     
-    # Estimate compression ratio
-    original_size = sum(
-        sum(d.numel() * 4 for d in tv.values())  # 4 bytes per float32
-        for tv in task_vectors.values()
+    # Compute and print detailed compression statistics
+    compression_stats = compute_compression_statistics(
+        task_vectors,
+        compressed_all,
+        bases,
+        config
     )
-    print(f"   📊 Original size (all tasks): ~{original_size / 1024 / 1024:.1f} MB")
+    print_detailed_compression_report(compression_stats, config)
     
     # =========================================================================
     # Step 6: Compute task weights
@@ -402,6 +463,63 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
       Weighting lets us give more influence to better-performing tasks.
       
    ⚙️ Weighting Strategy: '{config.svd_weighting}'
+""")
+    
+    # Print mathematical explanation based on weighting strategy
+    if config.svd_weighting == "uniform":
+        print(f"""
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           UNIFORM WEIGHTING FORMULA                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  📐 FORMULA:                                                                │
+│     w_i = 1/N  for all tasks i ∈ {{1, 2, ..., N}}                           │
+│                                                                              │
+│     where N = {len(config.tasks)} (number of tasks)                                        │
+│           w_i = 1/{len(config.tasks)} = {1.0/len(config.tasks):.4f}                                                  │
+│                                                                              │
+│  📝 Each task contributes equally to the merged model                       │
+│     Constraint: Σw_i = 1                                                    │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+""")
+    elif config.svd_weighting == "performance":
+        print(f"""
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       PERFORMANCE-BASED WEIGHTING FORMULA                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  📐 FORMULA (softmax with temperature):                                     │
+│     w_i = exp(p_i / τ) / Σⱼ exp(p_j / τ)                                    │
+│                                                                              │
+│     where p_i = performance (accuracy) of task i                            │
+│           τ = temperature = {config.svd_weighting_temperature} (higher = more uniform)                 │
+│                                                                              │
+│  📝 Tasks with higher accuracy get more weight                              │
+│     Temperature controls how much we favor high performers                  │
+│     τ → 0: winner-take-all, τ → ∞: uniform weights                         │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+""")
+    elif config.svd_weighting == "cluster":
+        print(f"""
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         CLUSTER-BASED WEIGHTING FORMULA                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  📐 TWO-STAGE WEIGHTING:                                                    │
+│                                                                              │
+│  Stage 1: Within-cluster averaging                                          │
+│     c_k = Σᵢ∈cluster_k (w_i × δ_i) / |cluster_k|                           │
+│                                                                              │
+│  Stage 2: Across-cluster averaging                                          │
+│     merged = Σₖ w_cluster_k × c_k                                           │
+│                                                                              │
+│  📝 Similar tasks are grouped and averaged first                            │
+│     Then cluster results are combined                                       │
+│     Number of clusters: {config.svd_cluster_k}                                              │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
 """)
     
     cluster_assignments = None
@@ -453,6 +571,31 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
       3. Reconstruct the parameter deltas from coefficients
 """)
     
+    # Print mathematical explanation for merging
+    print(f"""
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          MERGING MATHEMATICAL PROCESS                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  📐 FOR EACH PARAMETER, MERGING HAPPENS IN COEFFICIENT SPACE:               │
+│                                                                              │
+│  Step 1: DEQUANTIZE low-energy coefficients                                 │
+│          c_low = dequant(q₁) + dequant(q₂) + ... (RTVQ reconstruction)     │
+│                                                                              │
+│  Step 2: WEIGHTED AVERAGE of coefficients across tasks                      │
+│          c_high_merged = Σᵢ (wᵢ × c_high_i)                                 │
+│          c_low_merged = Σᵢ (wᵢ × c_low_i)                                   │
+│                                                                              │
+│          where wᵢ = weight for task i (Σwᵢ = 1)                             │
+│                                                                              │
+│  Step 3: RECONSTRUCT merged delta in parameter space                        │
+│          δ_merged = U_high × c_high_merged + U_low × c_low_merged          │
+│                                                                              │
+│          This reverses the SVD projection to get the merged delta          │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+""")
+    
     if config.svd_weighting == "cluster" and cluster_assignments is not None:
         print(f"   └─ Using cluster-based merging (hierarchical)")
         merged_deltas = merge_with_clustering(
@@ -495,6 +638,26 @@ def run_svd_hybrid_pipeline(config: SVDHybridConfig) -> Dict:
       merged_model = base_model + merged_deltas
       
       This creates a single model that combines all task knowledge!
+""")
+    
+    # Print mathematical explanation
+    print(f"""
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          FINAL MODEL ASSEMBLY FORMULA                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  📐 TASK ARITHMETIC FORMULA:                                                │
+│     θ_merged = θ_base + α × δ_merged                                        │
+│                                                                              │
+│     where θ_base = base (pre-trained) model parameters                      │
+│           δ_merged = combined task vector from SVD-Hybrid                   │
+│           α = scaling factor (typically 1.0)                                │
+│                                                                              │
+│  📝 The merged model inherits:                                              │
+│     • Base knowledge from θ_base                                            │
+│     • Combined task-specific adaptations from δ_merged                      │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
 """)
     
     # Make a copy of base state dict
