@@ -53,6 +53,9 @@ Example Usage:
 import torch
 from typing import Tuple, Dict
 
+# Constants for compression calculations
+FLOAT32_BITS = 32  # Number of bits in a float32
+
 
 def absmax_quantization(
     X: torch.Tensor,
@@ -203,7 +206,7 @@ def absmax_quantization(
         
         # Compression ratio
         import math
-        original_bits = 32  # float32
+        original_bits = FLOAT32_BITS
         compression = original_bits / qbit
         # Calculate actual bytes - need to round up for sub-byte quantization
         quantized_bytes = math.ceil(X.numel() * qbit / 8)
@@ -412,7 +415,7 @@ def asymmetric_quantization(
         
         # Compression ratio
         import math
-        original_bits = 32  # float32
+        original_bits = FLOAT32_BITS
         compression = original_bits / qbit
         # Calculate actual bytes - need to round up for sub-byte quantization
         quantized_bytes = math.ceil(X.numel() * qbit / 8)
