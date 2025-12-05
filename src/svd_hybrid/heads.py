@@ -9,19 +9,6 @@ PyTorch checkpoint files in a heads directory.
 import os
 import torch
 
-# Import ClassificationHead from src.modeling for type reference
-# Using late import to avoid circular dependencies
-_ClassificationHead = None
-
-
-def _get_classification_head_class():
-    """Lazy import of ClassificationHead to avoid circular imports."""
-    global _ClassificationHead
-    if _ClassificationHead is None:
-        from src.modeling import ClassificationHead
-        _ClassificationHead = ClassificationHead
-    return _ClassificationHead
-
 
 def get_classification_head(args, dataset_name):
     """
