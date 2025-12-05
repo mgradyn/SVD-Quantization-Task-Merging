@@ -47,23 +47,15 @@ multiple fine-tuned models into a single multi-task model. It uses:
 
 === EVALUATION ===
 
-After merging, you can evaluate and compare methods:
+After merging, you can evaluate the merged model:
 
-    >>> from src.svd_hybrid import evaluate_merged_model, compare_methods
+    >>> from src.svd_hybrid.eval import eval_single_dataset, evaluate
     >>> 
-    >>> # Evaluate the merged model
-    >>> eval_results = evaluate_merged_model(
-    ...     merged_model, 
-    ...     task_names=["Cars", "DTD"],
-    ...     evaluation_fn=my_eval_function  # Your evaluation function
-    ... )
+    >>> # Evaluate on a single dataset
+    >>> metrics = eval_single_dataset(image_encoder, "Cars", args)
     >>> 
-    >>> # Compare with baselines
-    >>> comparison = compare_methods(
-    ...     base_state_dict, 
-    ...     task_vectors,
-    ...     svd_hybrid_state_dict=merged_model
-    ... )
+    >>> # Evaluate on multiple datasets
+    >>> results = evaluate(image_encoder, args)
 
 === COMMAND LINE USAGE ===
 
@@ -82,22 +74,20 @@ __version__ = "0.1.0"
 from .config import SVDHybridConfig
 from .run import run_svd_hybrid
 
-# Import evaluation functions
-from .evaluation import (
-    evaluate_merged_model,
-    compare_methods,
-    create_baseline_task_arithmetic,
-    create_baseline_ties,
-    generate_evaluation_report
+# Import evaluation functions from eval module
+from .eval import (
+    eval_single_dataset,
+    eval_single_dataset_head,
+    eval_single_dataset_preprocess_head,
+    evaluate
 )
 
 # Define what gets exported with "from svd_hybrid import *"
 __all__ = [
     "SVDHybridConfig", 
     "run_svd_hybrid",
-    "evaluate_merged_model",
-    "compare_methods",
-    "create_baseline_task_arithmetic",
-    "create_baseline_ties",
-    "generate_evaluation_report"
+    "eval_single_dataset",
+    "eval_single_dataset_head",
+    "eval_single_dataset_preprocess_head",
+    "evaluate"
 ]

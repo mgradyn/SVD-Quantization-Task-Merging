@@ -5,12 +5,12 @@ import tqdm
 import torch
 import numpy as np
 
-import utils
-from dataset.common import get_dataloader, maybe_dictionarize
-from heads import get_classification_head
-from modeling import ImageClassifier
+from src import utils
+from .dataset.common import get_dataloader, maybe_dictionarize
+from .heads import get_classification_head
+from src.modeling import ImageClassifier
 
-from dataset.registry import get_dataset
+from .dataset.registry import get_dataset
 
 def eval_single_dataset(image_encoder, dataset_name, args):
     classification_head = get_classification_head(args, dataset_name)
