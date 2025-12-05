@@ -70,7 +70,8 @@ See [docs/svd_hybrid.md](docs/svd_hybrid.md) for detailed documentation.
 
 For running experiments with CLIP models (ViT-B-16, ViT-B-32, ViT-L-14) on 8 tasks, use the provided Colab notebook:
 
-[![Open In Colab](https://colab.research.google.com/drive/1siA6gTAHgTGk_NpsxyKsoNUsEpoqOJ9w?usp=sharing)]
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1siA6gTAHgTGk_NpsxyKsoNUsEpoqOJ9w?usp=sharing)
 
 The notebook expects checkpoints in your Google Drive with this structure:
 ```
