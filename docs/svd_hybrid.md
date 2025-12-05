@@ -160,63 +160,6 @@ python src/main.py --method svd_hybrid \
   --output-dir ./output
 ```
 
-### Advanced Options
-
-```bash
-python scripts/run_svd_hybrid.py \
-  --tasks cars eurosat dtd sun397 \
-  --checkpoint-dir ./checkpoints \
-  --base-model-path ./base_model.pt \
-  --mask-dir ./masks \
-  --energy-threshold 0.95 \
-  --max-rank 64 \
-  --low-bits 4 \
-  --rtvq-stages 3 \
-  --mask-strategy union \
-  --weighting performance \
-  --performance-file ./accuracies.json \
-  --store-artifacts \
-  --output-dir ./output \
-  --artifact-dir ./artifacts
-```
-
-### Clustering Mode
-
-```bash
-python scripts/run_svd_hybrid.py \
-  --tasks task1 task2 task3 task4 task5 task6 \
-  --checkpoint-dir ./checkpoints \
-  --base-model-path ./base_model.pt \
-  --weighting cluster \
-  --cluster-k 3 \
-  --output-dir ./output
-```
-
-### Hydra Configuration
-
-Create `my_config.yaml`:
-
-```yaml
-method: svd_hybrid
-tasks: [cars, eurosat, dtd, sun397]
-checkpoint_dir: ./checkpoints
-base_model_path: ./base_model.pt
-mask_dir: ./masks
-output_dir: ./output
-
-method:
-  svd_energy_threshold: 0.90
-  svd_max_rank: 128
-  svd_weighting: performance
-  performance_file: ./accuracies.json
-```
-
-Run:
-
-```bash
-python src/svd_hybrid/hydra_entry.py --config-name my_config
-```
-
 ## Performance File Format
 
 JSON file mapping task names to accuracy values:
@@ -328,28 +271,12 @@ Example output:
 1. **Energy threshold**: Start with 0.90-0.95 for good compression vs quality trade-off
 2. **Quantization**: Use 4 bits with 2-3 stages for most cases
 3. **Weighting**: Use performance-based when validation accuracies are available
-4. **Clustering**: Useful when tasks naturally group into domains (5+ tasks)
 5. **Noise region**: Only include if masks are highly selective (<30% parameters)
 
 ## Troubleshooting
 
-### SVD Fails
-- Try CPU device: `--device cpu`
-- Reduce max_rank: `--max-rank 64`
-- Check for NaN/Inf in task vectors
 
 ### High Reconstruction Error
 - Increase energy threshold: `--energy-threshold 0.95`
 - Increase quantization bits: `--low-bits 6`
 - Add more RTVQ stages: `--rtvq-stages 3`
-
-### Out of Memory
-- Reduce max_rank: `--max-rank 32`
-- Use FP16: `--fp16`
-- Process on CPU: `--device cpu`
-
-## References
-
-- Task Arithmetic: [Paper](https://arxiv.org/abs/2212.04089)
-- Tall Masks: [Paper](https://arxiv.org/abs/2401.01894)
-- TVQ (Task Vector Quantization): Related work on compression
