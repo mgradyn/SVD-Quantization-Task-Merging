@@ -1,52 +1,3 @@
-"""
-Compression pipeline: project deltas, quantize low-energy coefficients, store artifacts.
-
-=== TUTORIAL: The Compression Pipeline ===
-
-This module implements the compression step of SVD-Hybrid, which takes task vectors
-and produces a compact representation using SVD projection and quantization.
-
-=== THE COMPRESSION PROCESS ===
-
-For each task's delta vector:
-
-1. **Project to SVD basis**: Transform delta from parameter space to coefficient space
-   - c_high = U_high^T × delta → High-energy coefficients
-   - c_low = U_low^T × delta → Low-energy coefficients
-
-2. **Store high-energy in FP16**: c_high is stored in half-precision
-   - These capture most of the variance
-   - Small number of coefficients (rank k)
-
-3. **Quantize low-energy with RTVQ**: c_low is quantized to 4-bit
-   - Multi-stage residual quantization for accuracy
-   - Large number of coefficients but low precision
-
-=== WHY THIS WORKS ===
-
-- SVD separates important (high-energy) from less important (low-energy) components
-- High-energy coefficients need more precision → FP16
-- Low-energy coefficients can tolerate more quantization error → 4-bit RTVQ
-- Result: Good reconstruction with high compression
-
-=== COMPRESSION RATIO ===
-
-Compared to storing full task vectors:
-- FP16 high-energy: 2 bytes × k coefficients
-- 4-bit low-energy: 0.5 bytes × (D-k) coefficients + overhead
-- Total: Much less than 4 × D bytes for FP32
-
-=== EXAMPLE ===
-
-    >>> from compress import compress_all_parameters
-    >>> 
-    >>> compressed = compress_all_parameters(
-    ...     task_vectors, masks, bases, config
-    ... )
-    >>> # compressed[param_name][task_name]["masked"]["c_high_fp16"]
-    >>> # compressed[param_name][task_name]["masked"]["c_low_quant"]
-"""
-
 import torch
 from typing import Dict, List, Tuple, Optional
 from .rtvq import RTVQQuantizer
@@ -57,36 +8,7 @@ def project_to_basis(
     U_high: torch.Tensor,
     U_low: torch.Tensor
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Project delta vector onto SVD basis.
-    
-    Transforms the delta from parameter space to coefficient space using the
-    SVD basis matrices. This is a linear transformation:
-    
-        c = U^T × delta
-    
-    Where U is split into high-energy (U_high) and low-energy (U_low) bases.
-    
-    === FORMULA ===
-    
-    c_high = U_high^T × delta  [k × D] × [D] = [k]
-    c_low = U_low^T × delta    [(D-k) × D] × [D] = [D-k]
-    
-    === RECONSTRUCTION ===
-    
-    The original delta can be reconstructed (approximately):
-        delta ≈ U_high × c_high + U_low × c_low
-    
-    Args:
-        delta: Delta vector [D] (flattened parameter changes)
-        U_high: High-energy basis [D × k]
-        U_low: Low-energy basis [D × (D-k)]
-        
-    Returns:
-        Tuple of:
-            - c_high: High-energy coefficients [k]
-            - c_low: Low-energy coefficients [D-k]
-    """
+
     # Convert to float32 for computation precision
     delta_f = delta.float()
     U_high_f = U_high.float()
@@ -107,30 +29,7 @@ def compress_single_task(
     device: str = "cpu",
     mean: Optional[torch.Tensor] = None
 ) -> Dict:
-    """
-    Compress a single task's delta vector.
-    
-    Performs the full compression pipeline for one task:
-    1. Subtract mean if provided (centering for correct projection)
-    2. Project delta to basis coefficients
-    3. Store high-energy coefficients in FP16
-    4. Quantize low-energy coefficients with RTVQ
-    
-    Args:
-        task_delta: Task delta vector [D]
-        U_high: High-energy basis [D × k]
-        U_low: Low-energy basis [D × (D-k)]
-        quantizer: RTVQ quantizer instance
-        device: Device for computation
-        mean: Optional mean vector [D] or [D × 1] to subtract before projection.
-            If the SVD basis was constructed with centering (svd_center=True),
-            this mean must be provided for correct reconstruction.
-        
-    Returns:
-        Compression artifact dictionary containing:
-            - c_high_fp16: High-energy coefficients in FP16 [k]
-            - c_low_quant: Quantized low-energy coefficients (RTVQ payload)
-    """
+   
     # Step 0: Subtract mean if provided (for centered SVD basis)
     delta_to_project = task_delta
     if mean is not None:
@@ -165,20 +64,7 @@ def compress_masked_regions(
     quantizer: RTVQQuantizer,
     device: str = "cpu"
 ) -> Dict[str, Dict]:
-    """
-    Compress masked and optionally unmasked regions for all tasks.
-    
-    Args:
-        task_deltas_masked: Dictionary mapping task_name -> masked delta
-        task_deltas_unmasked: Dictionary mapping task_name -> unmasked delta (optional)
-        basis_masked: Masked basis dictionary (may contain "mean" if centering was used)
-        basis_unmasked: Unmasked basis dictionary (optional, may contain "mean")
-        quantizer: RTVQ quantizer
-        device: Device for computation
-        
-    Returns:
-        Dictionary mapping task_name -> compression artifacts
-    """
+   
     compressed_tasks = {}
     
     # Extract mean vectors if present (for centered SVD basis)
@@ -235,22 +121,7 @@ def compress_parameter(
     min_mask_size: int = 10,
     device: str = "cpu"
 ) -> Dict:
-    """
-    Compress a single parameter across all tasks.
-    
-    Args:
-        param_name: Parameter name
-        task_vectors: Dictionary mapping task_name -> parameter_name -> delta
-        mask: Binary mask for this parameter (optional)
-        basis: Basis dictionary (contains "masked" and optionally "noise")
-        quantizer: RTVQ quantizer
-        include_noise: Whether to process noise region
-        min_mask_size: Minimum mask size to process
-        device: Device for computation
-        
-    Returns:
-        Compression artifacts for this parameter
-    """
+   
     from .mask_loader import apply_mask_to_tensor, get_unmasked_portion
     
     # Extract deltas for this parameter
@@ -306,19 +177,6 @@ def compress_all_parameters(
     config,
     device: str = "cpu"
 ) -> Dict[str, Dict]:
-    """
-    Compress all parameters across all tasks.
-    
-    Args:
-        task_vectors: Dictionary mapping task_name -> parameter_name -> delta
-        masks: Dictionary mapping parameter_name -> mask
-        bases: Dictionary mapping parameter_name -> basis
-        config: SVDHybridConfig object
-        device: Device for computation
-        
-    Returns:
-        Dictionary mapping parameter_name -> task_name -> compression artifacts
-    """
     quantizer = RTVQQuantizer(
         num_bits=config.svd_low_bits,
         num_stages=config.svd_rtvq_stages

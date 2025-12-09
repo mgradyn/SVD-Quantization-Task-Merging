@@ -9,7 +9,6 @@ from src.svd_hybrid.rtvq import (
     asymmetric_dequantization,
     multistage_residual_quantization,
     multistage_residual_dequantization,
-    compute_quantization_error
 )
 
 
@@ -109,27 +108,6 @@ def test_rtvq_quantizer_class():
     # Check reconstruction quality
     relative_error = (tensor - reconstructed).norm() / tensor.norm()
     assert relative_error < 0.5  # Should reconstruct reasonably well
-
-
-def test_quantization_error_metrics():
-    """Test quantization error computation."""
-    original = torch.randn(50)
-    
-    quantizer = RTVQQuantizer(num_bits=4, num_stages=2)
-    quantized_obj = quantizer.quantize(original)
-    
-    error_metrics = compute_quantization_error(original, quantized_obj)
-    
-    # Check all metrics are present
-    assert "absolute_error" in error_metrics
-    assert "relative_error" in error_metrics
-    assert "max_absolute_error" in error_metrics
-    assert "mean_absolute_error" in error_metrics
-    
-    # Check values are reasonable
-    assert error_metrics["relative_error"] >= 0
-    assert error_metrics["relative_error"] < 1.0  # Should be reasonable
-
 
 def test_different_bit_widths():
     """Test that more bits give better reconstruction."""

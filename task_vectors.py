@@ -656,25 +656,6 @@ class QuantizedTaskVector:
     3. On demand, dequantize to reconstruct approximate deltas
     4. Apply dequantized deltas to base model
     
-    === USAGE ===
-    
-        # First, quantize a task vector
-        >>> from quantization_utils import asymmetric_quantization
-        >>> tv = TaskVector("base.pt", "finetuned.pt")
-        >>> quantized_deltas = {}
-        >>> for key, delta in tv.vector.items():
-        ...     q, scale, zp = asymmetric_quantization(delta, qbit=8)
-        ...     quantized_deltas[key] = {"quantized": q, "scale": scale, "zero_point": zp}
-        
-        # Create quantized task vector
-        >>> qtv = QuantizedTaskVector(quantized_deltas, method="asymmetric")
-        
-        # Dequantize when needed
-        >>> restored_deltas = qtv.dequantize()
-        
-        # Or directly apply to base model
-        >>> merged_state = qtv.apply_to("base.pt")
-    
     Attributes:
         quantized_deltas: Dict mapping param_name -> {quantized, scale, [zero_point]}
         method: Quantization method ("asymmetric" or "absmax")

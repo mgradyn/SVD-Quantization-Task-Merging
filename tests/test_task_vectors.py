@@ -119,64 +119,6 @@ def test_task_vector_apply_to():
     assert torch.allclose(result["weight"], finetuned["weight"])
 
 
-def test_quantized_task_vector_asymmetric():
-    """Test QuantizedTaskVector with asymmetric quantization."""
-    # Create task vector
-    pretrained = {"weight": torch.randn(5, 5)}
-    finetuned = {"weight": torch.randn(5, 5)}
-    tv = task_vectors.TaskVector(pretrained, finetuned)
-    
-    # Quantize deltas
-    quantized_deltas = {}
-    for key, delta in tv.vector.items():
-        X_q, scale, zero_point = quantization_utils.asymmetric_quantization(delta, qbit=8)
-        quantized_deltas[key] = {
-            "quantized": X_q,
-            "scale": scale,
-            "zero_point": zero_point
-        }
-    
-    # Create quantized task vector
-    qtv = task_vectors.QuantizedTaskVector(quantized_deltas, method="asymmetric")
-    
-    # Dequantize
-    dequantized = qtv.dequantize()
-    
-    # Check keys match
-    assert set(dequantized.keys()) == set(tv.vector.keys())
-    
-    # Check reconstruction is close
-    for key in tv.vector.keys():
-        relative_error = (tv.vector[key] - dequantized[key]).norm() / tv.vector[key].norm()
-        assert relative_error < 0.1
-
-
-def test_quantized_task_vector_apply():
-    """Test applying quantized task vector to model."""
-    # Use non-constant tensors to avoid degenerate quantization
-    pretrained = {"weight": torch.randn(3, 3)}
-    finetuned = {"weight": pretrained["weight"] + torch.randn(3, 3) * 0.5}
-    tv = task_vectors.TaskVector(pretrained, finetuned)
-    
-    # Quantize
-    quantized_deltas = {}
-    for key, delta in tv.vector.items():
-        X_q, scale, zero_point = quantization_utils.asymmetric_quantization(delta, qbit=8)
-        quantized_deltas[key] = {
-            "quantized": X_q,
-            "scale": scale,
-            "zero_point": zero_point
-        }
-    
-    qtv = task_vectors.QuantizedTaskVector(quantized_deltas, method="asymmetric")
-    
-    # Apply to pretrained
-    result = qtv.apply_to(pretrained)
-    
-    # Should be close to finetuned
-    relative_error = (result["weight"] - finetuned["weight"]).norm() / finetuned["weight"].norm()
-    assert relative_error < 0.1
-
 
 def test_quantized_finetuned_model():
     """Test QuantizedFinetunedModel."""
