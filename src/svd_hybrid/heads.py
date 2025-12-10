@@ -44,7 +44,7 @@ def get_classification_head(args, dataset_name):
     
     # Load the classification head
     print(f'Loading classification head from {head_path}')
-    classification_head = torch.load(head_path, map_location=device)
+    classification_head = torch.load(head_path, map_location=device, weights_only=False)
     
     # Move to device if needed
     if hasattr(classification_head, 'to'):
